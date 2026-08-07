@@ -1,0 +1,12 @@
+{
+  "name": "palimpsest",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node test/crypto.test.mjs"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.11.0"
+  }
+}
