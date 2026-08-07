@@ -1,6 +1,11 @@
 // Palimpsest headless test suite — node test/crypto.test.mjs
-// Tests 1, 6–9 require LSB steganography (milestone 2) and are marked PENDING.
-// Tests 2–5 cover the crypto core and must all pass before the UI is built.
+//
+// Exit criteria: all 9 brief tests + tests 10–11 green before the UI (milestone 3).
+// Current status: 4 of 9 brief tests green (tests 2–5). Tests 1, 6–9 are blocked
+// on LSB steganography (milestone 2). Tests 10–11 are new additions below.
+//
+// Run:  node test/crypto.test.mjs
+// Note: test 11 uses production Argon2 params (m=64 MB) and takes ~5–15 s.
 
 import assert from 'node:assert/strict';
 import {
@@ -143,8 +148,61 @@ await test('9. Carrier with no payload: "not found" path, no crash', async () =>
   throw pendingError('LSB steganography not yet implemented (milestone 2)');
 });
 
+// ─── Test 10: prfSecret path — end-to-end with a stubbed secret ──────────────
+// The PRF secret is normally provided by a hardware key via WebAuthn. Here we
+// stub it with random bytes to verify that:
+//   (a) encrypt+decrypt with the same secret succeeds, and
+//   (b) decrypt without the secret (or with a different one) is rejected.
+// This exercises the key-material concatenation branch in buildKeyMaterial.
+
+await test('10. prfSecret path: round-trip and rejection', async () => {
+  const prfSecret = crypto.getRandomValues(new Uint8Array(32));
+  const wrongSecret = crypto.getRandomValues(new Uint8Array(32));
+
+  const payload = await encryptPayload(
+    { type: 'text', data: 'hardware-key-protected' },
+    'password', 'pepper', prfSecret, FAST,
+  );
+
+  // Correct secret decrypts.
+  const result = await decryptPayload(payload, 'password', 'pepper', prfSecret);
+  assert.equal(result.data, 'hardware-key-protected');
+
+  // No secret → wrong key material → decryption must fail.
+  await assert.rejects(
+    decryptPayload(payload, 'password', 'pepper', null),
+    /could not be decrypted/,
+  );
+
+  // Different secret → wrong key material → decryption must fail.
+  await assert.rejects(
+    decryptPayload(payload, 'password', 'pepper', wrongSecret),
+    /could not be decrypted/,
+  );
+});
+
+// ─── Test 11: production Argon2 parameters — single round-trip ───────────────
+// Verifies that the real KDF configuration (m=64 MB, t=3, p=1) actually works.
+// Without this, the parameters we ship could silently be wrong or rejected by
+// hash-wasm (e.g. out-of-range value) and only a user would ever find out.
+// Expected runtime: 5–15 s depending on the machine.
+
+await test('11. Production Argon2 parameters round-trip (m=64 MB, t=3, p=1)', async () => {
+  const result = await encryptPayload(
+    { type: 'text', data: 'production-params-test' },
+    'password', 'pepper', null, ARGON2_DEFAULTS,
+  ).then(payload => decryptPayload(payload, 'password', 'pepper', null));
+
+  assert.equal(result.data, 'production-params-test');
+});
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
+const total = passed + pending + failed;
 console.log('');
-console.log(`Results: ${passed} passed, ${pending} pending, ${failed} failed`);
+console.log(`Results: ${passed} passed, ${pending} pending, ${failed} failed  (${total} total)`);
+console.log('');
+if (pending > 0) {
+  console.log(`Milestone exit gate: ${passed} of 9 brief tests green. Tests 1, 6–9 blocked on milestone 2 (LSB stego).`);
+}
 if (failed > 0) process.exit(1);
