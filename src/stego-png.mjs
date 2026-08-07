@@ -17,8 +17,11 @@ const IS_NODE = typeof process !== 'undefined' && Boolean(process.versions?.node
 // ─── Error codes ──────────────────────────────────────────────────────────────
 
 export const StegoCodes = {
-  CAPACITY_EXCEEDED: 'CAPACITY_EXCEEDED',
-  NO_PAYLOAD_FOUND:  'NO_PAYLOAD_FOUND',
+  CAPACITY_EXCEEDED:     'CAPACITY_EXCEEDED',
+  NO_PAYLOAD_FOUND:      'NO_PAYLOAD_FOUND',
+  // Browser-path-only: thrown when getImageData returns any pixel with alpha < 255.
+  // See decodePng browser branch below for why this cannot be recovered from.
+  TRANSPARENCY_REJECTED: 'TRANSPARENCY_REJECTED',
 };
 
 export class StegoError extends Error {
@@ -93,13 +96,31 @@ async function decodePng(pngBytes) {
     });
   }
   // ── Browser (Milestone 3) ─────────────────────────────────────────────────
+  // ALPHA PREMULTIPLICATION HAZARD: The canvas compositor premultiplies alpha
+  // during ctx.drawImage(). A pixel with alpha=128, R=200 in the source PNG
+  // becomes R=100 once the compositor blends it onto the canvas. getImageData
+  // returns the premultiplied values — the original R=200 (and its LSB) is
+  // permanently lost before we ever read the pixel. Setting alpha to 255
+  // afterwards cannot un-premultiply. The browser path therefore rejects any
+  // image with alpha < 255 pixels rather than silently embed into corrupted
+  // channel values. The Node.js path (pngjs) is not affected: pngjs delivers
+  // raw RGBA without premultiplication.
   const bitmap = await createImageBitmap(new Blob([pngBytes], { type: 'image/png' }));
   const canvas = Object.assign(document.createElement('canvas'),
     { width: bitmap.width, height: bitmap.height });
   const ctx = canvas.getContext('2d');
   ctx.drawImage(bitmap, 0, 0);
-  const id = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  return { data: new Uint8Array(id.data.buffer), width: bitmap.width, height: bitmap.height };
+  const id  = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = new Uint8Array(id.data.buffer);
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      throw new StegoError(
+        StegoCodes.TRANSPARENCY_REJECTED,
+        'Carrier has transparent pixels — use an opaque (no-transparency) PNG.',
+      );
+    }
+  }
+  return { data, width: bitmap.width, height: bitmap.height };
 }
 
 async function encodePng(pixelData, width, height) {

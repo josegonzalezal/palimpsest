@@ -6,7 +6,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/crypto.test.mjs"
+    "test": "node test/crypto.test.mjs",
+    "build": "node scripts/build-html.mjs"
   },
   "dependencies": {
     "hash-wasm": "^4.11.0",

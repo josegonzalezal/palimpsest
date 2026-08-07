@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Palimpsest</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    CSP notes:
+    • 'unsafe-inline'      — required for inline <script> and <style> blocks.
+    • 'wasm-unsafe-eval'   — required for WebAssembly.compile(Uint8Array) used
+                             by the hash-wasm Argon2id UMD bundle; this is NOT
+                             the same as 'unsafe-eval' (which allows JS eval).
+    • connect-src omitted  — defaults to 'none' via default-src; no network
+                             calls are made in Milestone 3. Milestone 4 will
+                             add the pepper-backend origin here.
+    • base-uri/form-action — locked to 'none' to block injection via <base>
+                             or form redirects.
+  -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none';">
+
+  <!-- Argon2id via hash-wasm (UMD bundle, WASM base64-inlined, no fetch needed) -->
+  <script>{{ARGON2_UMD}}</script>
+
+  <style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #111;
+  background: #fff;
+  padding: 2rem 1rem 4rem;
+}
+main { max-width: 580px; margin: 0 auto; }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.1rem; }
+.tagline { font-size: 0.8125rem; color: #666; margin-bottom: 1.75rem; }
+
+/* ── Single-factor notice ─────────────────────────────────────────────────── */
+.notice {
+  font-size: 0.875rem;
+  border: 1px solid #c8b84a;
+  background: #fffce8;
+  border-radius: 3px;
+  padding: 0.625rem 0.875rem;
+  margin-bottom: 1.75rem;
+  line-height: 1.55;
+  color: #444;
+}
+
+/* ── Mode tabs ────────────────────────────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  border-bottom: 1px solid #ccc;
+  margin-bottom: 1.75rem;
+  gap: 0;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0.4375rem 1.125rem;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  color: #666;
+  cursor: pointer;
+}
+.tab-btn.active { color: #111; border-bottom-color: #111; font-weight: 500; }
+.tab-btn:focus-visible { outline: 2px solid #555; outline-offset: 2px; }
+
+/* ── Form fields ──────────────────────────────────────────────────────────── */
+.field { margin-bottom: 1rem; }
+.field label { display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.25rem; color: #333; }
+.field input[type="password"] {
+  width: 100%;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  color: #111;
+  background: #fff;
+}
+.field input:focus { outline: none; border-color: #555; box-shadow: 0 0 0 2px rgba(85,85,85,.12); }
+
+/* ── Fieldsets ────────────────────────────────────────────────────────────── */
+fieldset { border: 1px solid #ddd; border-radius: 3px; padding: 0.875rem 1rem; margin-bottom: 1rem; }
+legend { font-size: 0.875rem; font-weight: 500; color: #333; padding: 0 0.25rem; }
+.radio-group { display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.5rem; }
+.radio-group label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9375rem; cursor: pointer; }
+
+.sub-content {
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid #eee;
+}
+.sub-content label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+  color: #333;
+}
+.sub-content textarea {
+  width: 100%;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  color: #111;
+  background: #fff;
+  resize: vertical;
+}
+.sub-content textarea:focus { outline: none; border-color: #555; box-shadow: 0 0 0 2px rgba(85,85,85,.12); }
+.sub-content input[type="file"] { font-size: 0.9375rem; }
+
+.capacity-info { font-size: 0.8125rem; color: #555; margin-top: 0.375rem; }
+.capacity-info.error { color: #a00; }
+.file-name { font-size: 0.8125rem; color: #666; margin-left: 0.5rem; }
+
+/* ── Button ───────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-block;
+  padding: 0.5rem 1.25rem;
+  background: #111;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+.btn-primary:hover:not(:disabled) { background: #333; }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── Status ───────────────────────────────────────────────────────────────── */
+.status {
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: 3px;
+}
+.status.ok      { color: #145214; background: #edfaed; }
+.status.error   { color: #8b0000; background: #fdf0f0; }
+.status.working { color: #333;    background: #f4f4f4; }
+
+/* ── Result ───────────────────────────────────────────────────────────────── */
+.result { margin-top: 1rem; }
+.result-label { font-size: 0.875rem; color: #444; margin-bottom: 0.375rem; }
+.result-text {
+  display: block;
+  width: 100%;
+  padding: 0.625rem;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.8125rem;
+  background: #f9f9f9;
+  color: #111;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  max-height: 320px;
+  resize: vertical;
+}
+a.download-link {
+  display: inline-block;
+  font-size: 0.9375rem;
+  color: #004aaa;
+  text-decoration: underline;
+  margin-top: 0.25rem;
+}
+
+/* ── Dark mode ────────────────────────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  body { background: #141414; color: #ddd; }
+  .tagline { color: #888; }
+  .notice { border-color: #6e5e10; background: #1f1a02; color: #ccc; }
+  .mode-tabs { border-bottom-color: #444; }
+  .tab-btn { color: #888; }
+  .tab-btn.active { color: #ddd; border-bottom-color: #ddd; }
+  .field label, .sub-content label, legend { color: #bbb; }
+  .field input[type="password"], .sub-content textarea {
+    background: #1e1e1e; color: #ddd; border-color: #555;
+  }
+  .field input:focus, .sub-content textarea:focus {
+    border-color: #999; box-shadow: 0 0 0 2px rgba(153,153,153,.15);
+  }
+  fieldset { border-color: #3a3a3a; }
+  .sub-content { border-top-color: #2e2e2e; }
+  .capacity-info { color: #aaa; }
+  .capacity-info.error { color: #f88; }
+  .file-name { color: #999; }
+  .btn-primary { background: #ddd; color: #141414; }
+  .btn-primary:hover:not(:disabled) { background: #bbb; }
+  .status.ok      { color: #7fc97f; background: #081808; }
+  .status.error   { color: #f88;    background: #200808; }
+  .status.working { color: #bbb;    background: #1e1e1e; }
+  .result-text { background: #1e1e1e; border-color: #3a3a3a; color: #ddd; }
+  a.download-link { color: #88aaff; }
+}
+  </style>
+</head>
+<body>
+<main>
+
+  <header>
+    <h1>Palimpsest</h1>
+    <p class="tagline">Client-side encryption and steganography</p>
+  </header>
+
+  <div class="notice" role="note">
+    <strong>Single-factor mode.</strong> The pepper is typed manually on
+    this page. Until the pepper backend is wired up (Milestone&nbsp;4), this
+    tool has only one secret factor — the password and pepper you enter here.
+    Do not rely on it for two-factor protection.
+  </div>
+
+  <nav class="mode-tabs" role="tablist">
+    <button class="tab-btn active" id="tab-enc" role="tab"
+            aria-selected="true" aria-controls="section-enc">Encrypt</button>
+    <button class="tab-btn" id="tab-dec" role="tab"
+            aria-selected="false" aria-controls="section-dec">Decrypt</button>
+  </nav>
+
+  <!-- ═══════════════════════════ ENCRYPT ════════════════════════════════ -->
+  <section id="section-enc" role="tabpanel" aria-labelledby="tab-enc">
+
+    <div class="field">
+      <label for="enc-password">Password</label>
+      <!-- no name attribute — keeps this field out of form auto-fill heuristics -->
+      <input type="password" id="enc-password" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="enc-pepper">Pepper</label>
+      <input type="password" id="enc-pepper" autocomplete="off" spellcheck="false">
+    </div>
+
+    <fieldset>
+      <legend>What to hide</legend>
+      <div class="radio-group">
+        <label><input type="radio" name="enc-input" value="text" checked> Text message</label>
+        <label><input type="radio" name="enc-input" value="file"> File</label>
+      </div>
+      <div id="enc-text-area" class="sub-content">
+        <label for="enc-message">Message</label>
+        <textarea id="enc-message" rows="5"
+                  placeholder="Type your message…" spellcheck="false"></textarea>
+      </div>
+      <div id="enc-file-area" class="sub-content" hidden>
+        <label for="enc-file">Choose file</label>
+        <input type="file" id="enc-file">
+        <span id="enc-file-name" class="file-name"></span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Output</legend>
+      <div class="radio-group">
+        <label><input type="radio" name="enc-output" value="png" checked> Embed in PNG carrier</label>
+        <label><input type="radio" name="enc-output" value="armored"> Armored text</label>
+      </div>
+      <div id="enc-carrier-area" class="sub-content">
+        <label for="enc-carrier">Carrier PNG</label>
+        <input type="file" id="enc-carrier" accept="image/png">
+        <!-- Capacity is shown here as soon as the carrier file is loaded,
+             before the user starts encryption. -->
+        <div id="enc-capacity" class="capacity-info" hidden></div>
+      </div>
+    </fieldset>
+
+    <button type="button" id="enc-submit" class="btn-primary">Encrypt</button>
+    <p id="enc-status" class="status" hidden></p>
+    <div id="enc-result" class="result" hidden></div>
+
+  </section>
+
+  <!-- ═══════════════════════════ DECRYPT ════════════════════════════════ -->
+  <section id="section-dec" role="tabpanel" aria-labelledby="tab-dec" hidden>
+
+    <div class="field">
+      <label for="dec-password">Password</label>
+      <input type="password" id="dec-password" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="dec-pepper">Pepper</label>
+      <input type="password" id="dec-pepper" autocomplete="off" spellcheck="false">
+    </div>
+
+    <fieldset>
+      <legend>Source</legend>
+      <div class="radio-group">
+        <label><input type="radio" name="dec-input" value="png" checked> PNG carrier</label>
+        <label><input type="radio" name="dec-input" value="armored"> Armored text</label>
+      </div>
+      <div id="dec-png-area" class="sub-content">
+        <label for="dec-carrier">Carrier PNG</label>
+        <input type="file" id="dec-carrier" accept="image/png">
+      </div>
+      <div id="dec-armored-area" class="sub-content" hidden>
+        <label for="dec-armored">Armored message</label>
+        <textarea id="dec-armored" rows="8"
+                  placeholder="Paste the armored Palimpsest message here…"
+                  spellcheck="false"></textarea>
+      </div>
+    </fieldset>
+
+    <button type="button" id="dec-submit" class="btn-primary">Decrypt</button>
+    <p id="dec-status" class="status" hidden></p>
+    <div id="dec-result" class="result" hidden></div>
+
+  </section>
+
+</main>
+<script>
+'use strict';
+
+// ─── Crypto constants ─────────────────────────────────────────────────────────
+const MAGIC               = new Uint8Array([0x50, 0x4c, 0x4d, 0x50]); // "PLMP"
+const VERSION             = 1;
+const KDF_ARGON2ID        = 0x02;
+const CONTENT_TEXT        = 0x00;
+const CONTENT_FILE        = 0x01;
+const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024;
+const ARGON2_DEFAULTS     = { m: 65536, t: 3, p: 1 }; // m in KiB (64 MB)
+const ARGON2_LIMITS       = { m: { min: 8192, max: 262144 }, t: { min: 1, max: 10 }, p: { min: 1, max: 4 } };
+
+// ─── Error types ──────────────────────────────────────────────────────────────
+const ErrorCodes = {
+  NO_PAYLOAD_FOUND:  'NO_PAYLOAD_FOUND',
+  DECRYPTION_FAILED: 'DECRYPTION_FAILED',
+  PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+};
+class PalimpsestError extends Error {
+  constructor(code, message) { super(message); this.name = 'PalimpsestError'; this.code = code; }
+}
+
+const StegoCodes = {
+  CAPACITY_EXCEEDED:     'CAPACITY_EXCEEDED',
+  NO_PAYLOAD_FOUND:      'NO_PAYLOAD_FOUND',
+  TRANSPARENCY_REJECTED: 'TRANSPARENCY_REJECTED',
+};
+class StegoError extends Error {
+  constructor(code, message) { super(message); this.name = 'StegoError'; this.code = code; }
+}
+
+// ─── Buffer helpers ───────────────────────────────────────────────────────────
+function concat(...arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+function u16be(n) { return new Uint8Array([(n >> 8) & 0xff, n & 0xff]); }
+function u32be(n) { return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]); }
+function readU16(b, o) { return (b[o] << 8) | b[o + 1]; }
+function readU32(b, o) { return ((b[o] << 24) | (b[o+1] << 16) | (b[o+2] << 8) | b[o+3]) >>> 0; }
+
+// ─── Compression ──────────────────────────────────────────────────────────────
+async function compress(data) {
+  const cs = new CompressionStream('deflate-raw');
+  const w = cs.writable.getWriter(); w.write(data); w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+async function decompress(data) {
+  const ds = new DecompressionStream('deflate-raw');
+  const w = ds.writable.getWriter(); w.write(data); w.close();
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+
+// ─── Key derivation ───────────────────────────────────────────────────────────
+function buildKeyMaterial(password, pepper, prfSecret) {
+  const enc = new TextEncoder();
+  const parts = [enc.encode(password), enc.encode(pepper)];
+  if (prfSecret) parts.push(prfSecret instanceof Uint8Array ? prfSecret : new Uint8Array(prfSecret));
+  return concat(...parts);
+}
+async function deriveKey(keyMaterial, salt, params) {
+  // hashwasm is the global set by the argon2 UMD bundle in <head>.
+  const raw = await hashwasm.argon2id({
+    password: keyMaterial, salt,
+    memorySize: params.m, iterations: params.t, parallelism: params.p,
+    hashLength: 32, outputType: 'binary',
+  });
+  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+// ─── KDF params blob ──────────────────────────────────────────────────────────
+function encodeKdfParams(p) {
+  return concat(new Uint8Array([KDF_ARGON2ID]), u32be(p.m), u32be(p.t), new Uint8Array([p.p]));
+}
+function decodeKdfParams(blob) {
+  if (blob[0] !== KDF_ARGON2ID) throw new Error('unknown KDF');
+  const m = readU32(blob, 1), t = readU32(blob, 5), p = blob[9];
+  const L = ARGON2_LIMITS;
+  if (m < L.m.min || m > L.m.max || t < L.t.min || t > L.t.max || p < L.p.min || p > L.p.max)
+    throw new Error('kdf param out of range');
+  return { m, t, p };
+}
+
+// ─── Content header ───────────────────────────────────────────────────────────
+// Layout: [type(1)][compressed(1)][nameLen(2)][name][mimeLen(2)][mime][content]
+function encodeContent(typeFlag, name, mime, content, compressed) {
+  const enc = new TextEncoder();
+  const nameB = enc.encode(name || ''), mimeB = enc.encode(mime || '');
+  return concat(new Uint8Array([typeFlag, compressed ? 0x01 : 0x00]), u16be(nameB.length), nameB, u16be(mimeB.length), mimeB, content);
+}
+function decodeContent(buf) {
+  const dec = new TextDecoder(); let o = 0;
+  const typeFlag = buf[o++], compressed = buf[o++] === 0x01;
+  const nameLen = readU16(buf, o); o += 2;
+  const name = dec.decode(buf.slice(o, o + nameLen)); o += nameLen;
+  const mimeLen = readU16(buf, o); o += 2;
+  const mime = dec.decode(buf.slice(o, o + mimeLen)); o += mimeLen;
+  return { typeFlag, compressed, name, mime, content: buf.slice(o) };
+}
+
+// ─── Armored text ─────────────────────────────────────────────────────────────
+const ARMOR_HEADER = '-----BEGIN PALIMPSEST MESSAGE-----';
+const ARMOR_FOOTER = '-----END PALIMPSEST MESSAGE-----';
+function uint8ToBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+function base64ToUint8(b64) {
+  const s = atob(b64), out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+function armorPayload(bytes) {
+  const b64 = uint8ToBase64(bytes), lines = [];
+  for (let i = 0; i < b64.length; i += 64) lines.push(b64.slice(i, i + 64));
+  return ARMOR_HEADER + '\nVersion: ' + VERSION + '\n\n' + lines.join('\n') + '\n' + ARMOR_FOOTER;
+}
+function unarmorPayload(text) {
+  const s = text.trim();
+  const hi = s.indexOf(ARMOR_HEADER), fi = s.indexOf(ARMOR_FOOTER);
+  if (hi === -1 || fi === -1) return null;
+  const blankLine = s.indexOf('\n\n', hi);
+  if (blankLine === -1) return null;
+  const b64 = s.slice(blankLine + 2, fi).trim().replace(/\s+/g, '');
+  return base64ToUint8(b64);
+}
+
+// ─── Encrypt ──────────────────────────────────────────────────────────────────
+async function encryptPayload(payload, password, pepper, getPrfSecret, kdfParams) {
+  kdfParams = kdfParams || ARGON2_DEFAULTS;
+  const enc = new TextEncoder();
+  const rawData = typeof payload.data === 'string' ? enc.encode(payload.data) : payload.data;
+  if (rawData.length > MAX_PLAINTEXT_BYTES)
+    throw new PalimpsestError(ErrorCodes.PAYLOAD_TOO_LARGE, 'Payload too large: ' + rawData.length + ' bytes exceeds the ' + (MAX_PLAINTEXT_BYTES / 1024 / 1024) + ' MB limit');
+  const typeFlag       = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
+  const compressedData = await compress(rawData);
+  const innerContent   = encodeContent(typeFlag, payload.name || '', payload.mime || '', compressedData, true);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  let prfSalt, prfSecret;
+  if (getPrfSecret) {
+    prfSalt   = crypto.getRandomValues(new Uint8Array(32));
+    prfSecret = await getPrfSecret(prfSalt);
+  } else {
+    prfSalt   = new Uint8Array(32);
+    prfSecret = null;
+  }
+  const kdfBlob       = encodeKdfParams(kdfParams);
+  const ciphertextLen = innerContent.length + 16;
+  const aad = concat(MAGIC, new Uint8Array([VERSION]), u16be(kdfBlob.length), kdfBlob, salt, prfSalt, iv, u32be(ciphertextLen));
+  const keyMat = buildKeyMaterial(password, pepper, prfSecret);
+  const key    = await deriveKey(keyMat, salt, kdfParams);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, innerContent));
+  return concat(aad, ciphertext);
+}
+
+// ─── Decrypt ──────────────────────────────────────────────────────────────────
+async function decryptPayload(payloadBytes, password, pepper, getPrfSecret) {
+  const buf = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes);
+  let o = 0;
+  const magic = String.fromCharCode(...buf.slice(o, o + 4)); o += 4;
+  if (magic !== 'PLMP')
+    throw new PalimpsestError(ErrorCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  let plain;
+  try {
+    const version = buf[o++];
+    if (version !== VERSION) throw new Error('unsupported version');
+    const kdfParamsLen = readU16(buf, o); o += 2;
+    const kdfBlob      = buf.slice(o, o + kdfParamsLen); o += kdfParamsLen;
+    const kdfParams    = decodeKdfParams(kdfBlob);
+    const salt    = buf.slice(o, o + 16); o += 16;
+    const prfSalt = buf.slice(o, o + 32); o += 32;
+    const iv      = buf.slice(o, o + 12); o += 12;
+    const ctLen   = readU32(buf, o);      o += 4;
+    const aad = buf.slice(0, o);
+    const ct  = buf.slice(o, o + ctLen);
+    const prfSecret = getPrfSecret ? await getPrfSecret(prfSalt) : null;
+    const keyMat    = buildKeyMaterial(password, pepper, prfSecret);
+    const key       = await deriveKey(keyMat, salt, kdfParams);
+    plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, ct));
+  } catch {
+    throw new PalimpsestError(ErrorCodes.DECRYPTION_FAILED, 'Payload found but could not be decrypted');
+  }
+  const { typeFlag, compressed, name, mime, content } = decodeContent(plain);
+  const rawContent = compressed ? await decompress(content) : content;
+  const dec = new TextDecoder();
+  return { type: typeFlag === CONTENT_TEXT ? 'text' : 'file', name, mime, data: typeFlag === CONTENT_TEXT ? dec.decode(rawContent) : rawContent };
+}
+
+// ─── LSB steganography (browser) ─────────────────────────────────────────────
+function capacity(width, height) { return Math.floor(width * height * 3 / 8); }
+
+function writeBits(pixelData, bytes) {
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    for (let bit = 0; bit < 8; bit++) {
+      const si  = i * 8 + bit;
+      const pos = Math.floor(si / 3) * 4 + (si % 3);
+      pixelData[pos] = (pixelData[pos] & 0xfe) | ((b >> (7 - bit)) & 1);
+    }
+  }
+}
+function readBits(pixelData, numBytes) {
+  const out = new Uint8Array(numBytes);
+  for (let i = 0; i < numBytes; i++) {
+    let b = 0;
+    for (let bit = 0; bit < 8; bit++) {
+      const si = i * 8 + bit;
+      b |= (pixelData[Math.floor(si / 3) * 4 + (si % 3)] & 1) << (7 - bit);
+    }
+    out[i] = b;
+  }
+  return out;
+}
+
+const STEGO_PREFIX = 4; // u32be length field
+const PLMP_MAGIC   = [0x50, 0x4c, 0x4d, 0x50];
+function makeU32be(n) { return new Uint8Array([(n>>>24)&0xff,(n>>>16)&0xff,(n>>>8)&0xff,n&0xff]); }
+function readStegoU32be(b) { return ((b[0]<<24)|(b[1]<<16)|(b[2]<<8)|b[3])>>>0; }
+
+async function decodePngBrowser(pngBytes) {
+  // ALPHA PREMULTIPLICATION: ctx.drawImage composites the image and premultiplies
+  // alpha before getImageData can read it. A pixel with alpha=128, R=200 becomes
+  // R=100 in the composited output; the original R (and its LSB) are gone. Forcing
+  // alpha to 255 afterwards cannot undo this. We reject images with any transparency
+  // rather than silently embed into already-corrupted channel values.
+  const bitmap = await createImageBitmap(new Blob([pngBytes], { type: 'image/png' }));
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width; canvas.height = bitmap.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0);
+  const id   = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = new Uint8Array(id.data.buffer);
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      throw new StegoError(
+        StegoCodes.TRANSPARENCY_REJECTED,
+        'This image has transparent pixels. Use an opaque PNG (no transparency or alpha channel) as the carrier.',
+      );
+    }
+  }
+  return { data, width: bitmap.width, height: bitmap.height };
+}
+
+async function encodePngBrowser(pixelData, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixelData), width, height), 0, 0);
+  // toBlob with 'image/png' is mandatory — toDataURL can be lossy on some browsers.
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (!blob) return reject(new Error('canvas.toBlob returned null'));
+      blob.arrayBuffer().then(b => resolve(new Uint8Array(b))).catch(reject);
+    }, 'image/png');
+  });
+}
+
+async function embedInPng(pngBytes, payloadBytes) {
+  const { data, width, height } = await decodePngBrowser(pngBytes);
+  const cap = capacity(width, height), required = STEGO_PREFIX + payloadBytes.length;
+  if (required > cap) {
+    throw new StegoError(
+      StegoCodes.CAPACITY_EXCEEDED,
+      'Carrier too small: need ' + required + ' B but capacity is ' + cap + ' B (' + width + '\xd7' + height + ' PNG). ' +
+      'Payload is ' + payloadBytes.length + ' B; ' + STEGO_PREFIX + ' B length prefix.',
+    );
+  }
+  const stream = new Uint8Array(STEGO_PREFIX + payloadBytes.length);
+  stream.set(makeU32be(payloadBytes.length)); stream.set(payloadBytes, STEGO_PREFIX);
+  writeBits(data, stream);
+  return encodePngBrowser(data, width, height);
+}
+
+async function extractFromPng(pngBytes) {
+  const { data, width, height } = await decodePngBrowser(pngBytes);
+  const cap = capacity(width, height);
+  if (cap < STEGO_PREFIX)
+    throw new StegoError(StegoCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  const len = readStegoU32be(readBits(data, STEGO_PREFIX));
+  if (len === 0 || len > cap - STEGO_PREFIX)
+    throw new StegoError(StegoCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  const payload = readBits(data, STEGO_PREFIX + len).slice(STEGO_PREFIX);
+  if (payload[0] !== PLMP_MAGIC[0] || payload[1] !== PLMP_MAGIC[1] ||
+      payload[2] !== PLMP_MAGIC[2] || payload[3] !== PLMP_MAGIC[3])
+    throw new StegoError(StegoCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  return payload;
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function showStatus(el, message, type) {
+  el.textContent = message;
+  el.className = 'status ' + type;
+  el.hidden = false;
+}
+function clearStatus(el) { el.hidden = true; el.textContent = ''; }
+
+function userMessage(err) {
+  if (err instanceof PalimpsestError) {
+    if (err.code === ErrorCodes.NO_PAYLOAD_FOUND)  return 'No payload found in this image. Is this the right file?';
+    if (err.code === ErrorCodes.DECRYPTION_FAILED) return 'Wrong password, wrong pepper, or the carrier has been modified.';
+    return err.message; // PAYLOAD_TOO_LARGE — size info is user-relevant
+  }
+  if (err instanceof StegoError) {
+    if (err.code === StegoCodes.NO_PAYLOAD_FOUND) return 'No payload found in this image. Is this the right file?';
+    return err.message; // CAPACITY_EXCEEDED, TRANSPARENCY_REJECTED — messages are user-readable
+  }
+  console.error('Unexpected error:', err);
+  return 'Unexpected error: ' + err.message;
+}
+
+function readFileAsBytes(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload  = e => resolve(new Uint8Array(e.target.result));
+    r.onerror = () => reject(new Error('File read failed'));
+    r.readAsArrayBuffer(file);
+  });
+}
+
+// ─── Mode tabs ────────────────────────────────────────────────────────────────
+function switchTab(mode) {
+  const toEnc = mode === 'enc';
+  $('section-enc').hidden = !toEnc; $('section-dec').hidden = toEnc;
+  $('tab-enc').classList.toggle('active', toEnc);
+  $('tab-dec').classList.toggle('active', !toEnc);
+  $('tab-enc').setAttribute('aria-selected', String(toEnc));
+  $('tab-dec').setAttribute('aria-selected', String(!toEnc));
+}
+$('tab-enc').addEventListener('click', () => switchTab('enc'));
+$('tab-dec').addEventListener('click', () => switchTab('dec'));
+
+// ─── Encrypt: what-to-hide toggle ─────────────────────────────────────────────
+document.querySelectorAll('input[name="enc-input"]').forEach(r => r.addEventListener('change', () => {
+  $('enc-text-area').hidden = r.value !== 'text';
+  $('enc-file-area').hidden = r.value !== 'file';
+}));
+
+// ─── Encrypt: output format toggle ────────────────────────────────────────────
+document.querySelectorAll('input[name="enc-output"]').forEach(r => r.addEventListener('change', () => {
+  $('enc-carrier-area').hidden = r.value !== 'png';
+  if (r.value !== 'png') $('enc-capacity').hidden = true;
+}));
+
+// ─── Carrier PNG: show capacity immediately on file load ──────────────────────
+$('enc-carrier').addEventListener('change', async () => {
+  const capDiv = $('enc-capacity');
+  capDiv.hidden = true; capDiv.className = 'capacity-info';
+  const file = $('enc-carrier').files[0];
+  if (!file) return;
+  try {
+    const bytes  = await readFileAsBytes(file);
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const cap    = capacity(bitmap.width, bitmap.height);
+    capDiv.textContent = 'Capacity: ' + cap.toLocaleString() + ' B (' + bitmap.width + '\xd7' + bitmap.height + ' image)';
+    capDiv.hidden = false;
+  } catch {
+    capDiv.textContent = 'Could not read image dimensions.';
+    capDiv.className = 'capacity-info error';
+    capDiv.hidden = false;
+  }
+});
+
+// ─── Encrypt: file name display ───────────────────────────────────────────────
+$('enc-file').addEventListener('change', () => {
+  const f = $('enc-file').files[0];
+  $('enc-file-name').textContent = f ? f.name : '';
+});
+
+// ─── Decrypt: source toggle ───────────────────────────────────────────────────
+document.querySelectorAll('input[name="dec-input"]').forEach(r => r.addEventListener('change', () => {
+  $('dec-png-area').hidden     = r.value !== 'png';
+  $('dec-armored-area').hidden = r.value !== 'armored';
+}));
+
+// ─── Encrypt handler ──────────────────────────────────────────────────────────
+$('enc-submit').addEventListener('click', async () => {
+  const statusEl = $('enc-status'), resultEl = $('enc-result');
+  clearStatus(statusEl); resultEl.hidden = true; resultEl.innerHTML = '';
+
+  const password = $('enc-password').value;
+  const pepper   = $('enc-pepper').value;
+  if (!password) { showStatus(statusEl, 'Password is required.', 'error'); return; }
+  if (!pepper)   { showStatus(statusEl, 'Pepper is required.',   'error'); return; }
+
+  const inputType  = document.querySelector('input[name="enc-input"]:checked').value;
+  const outputType = document.querySelector('input[name="enc-output"]:checked').value;
+
+  let payloadInput;
+  if (inputType === 'text') {
+    const msg = $('enc-message').value;
+    if (!msg.trim()) { showStatus(statusEl, 'Message cannot be empty.', 'error'); return; }
+    payloadInput = { type: 'text', data: msg };
+  } else {
+    const file = $('enc-file').files[0];
+    if (!file) { showStatus(statusEl, 'No file selected.', 'error'); return; }
+    payloadInput = { type: 'file', name: file.name, mime: file.type || 'application/octet-stream', data: await readFileAsBytes(file) };
+  }
+
+  if (outputType === 'png' && !$('enc-carrier').files[0]) {
+    showStatus(statusEl, 'No carrier PNG selected.', 'error'); return;
+  }
+
+  const btn = $('enc-submit');
+  btn.disabled = true;
+  showStatus(statusEl, 'Deriving key — this takes several seconds…', 'working');
+
+  try {
+    const encrypted = await encryptPayload(payloadInput, password, pepper);
+
+    if (outputType === 'armored') {
+      const armored = armorPayload(encrypted);
+      const label = document.createElement('p');
+      label.className = 'result-label'; label.textContent = 'Copy this armored message:';
+      const ta = document.createElement('textarea');
+      ta.className = 'result-text'; ta.readOnly = true; ta.rows = 10;
+      ta.spellcheck = false; ta.value = armored;
+      resultEl.appendChild(label); resultEl.appendChild(ta);
+    } else {
+      const carrierFile  = $('enc-carrier').files[0];
+      const carrierBytes = await readFileAsBytes(carrierFile);
+      showStatus(statusEl, 'Embedding payload…', 'working');
+      const stegoBytes = await embedInPng(carrierBytes, encrypted);
+      const blob = new Blob([stegoBytes], { type: 'image/png' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'palimpsest-output.png';
+      a.textContent = 'Download stego PNG'; a.className = 'download-link';
+      resultEl.appendChild(a);
+    }
+    resultEl.hidden = false;
+    showStatus(statusEl, 'Done.', 'ok');
+  } catch (err) {
+    showStatus(statusEl, userMessage(err), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ─── Decrypt handler ──────────────────────────────────────────────────────────
+$('dec-submit').addEventListener('click', async () => {
+  const statusEl = $('dec-status'), resultEl = $('dec-result');
+  clearStatus(statusEl); resultEl.hidden = true; resultEl.innerHTML = '';
+
+  const password = $('dec-password').value;
+  const pepper   = $('dec-pepper').value;
+  if (!password) { showStatus(statusEl, 'Password is required.', 'error'); return; }
+  if (!pepper)   { showStatus(statusEl, 'Pepper is required.',   'error'); return; }
+
+  const inputType = document.querySelector('input[name="dec-input"]:checked').value;
+  const btn = $('dec-submit');
+  btn.disabled = true;
+
+  let payloadBytes;
+  try {
+    if (inputType === 'png') {
+      const file = $('dec-carrier').files[0];
+      if (!file) { showStatus(statusEl, 'No file selected.', 'error'); btn.disabled = false; return; }
+      showStatus(statusEl, 'Extracting payload…', 'working');
+      const imgBytes = await readFileAsBytes(file);
+      payloadBytes = await extractFromPng(imgBytes);
+    } else {
+      const text = $('dec-armored').value.trim();
+      if (!text) { showStatus(statusEl, 'Paste an armored message first.', 'error'); btn.disabled = false; return; }
+      payloadBytes = unarmorPayload(text);
+      if (!payloadBytes) {
+        showStatus(statusEl, 'No valid Palimpsest armor block found in the pasted text.', 'error');
+        btn.disabled = false; return;
+      }
+    }
+
+    showStatus(statusEl, 'Deriving key — this takes several seconds…', 'working');
+    const result = await decryptPayload(payloadBytes, password, pepper);
+
+    if (result.type === 'text') {
+      const pre = document.createElement('pre');
+      pre.className = 'result-text'; pre.textContent = result.data;
+      resultEl.appendChild(pre);
+    } else {
+      const blob = new Blob([result.data], { type: result.mime || 'application/octet-stream' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = result.name || 'palimpsest-output';
+      a.textContent = 'Download ' + (result.name || 'file');
+      a.className = 'download-link';
+      resultEl.appendChild(a);
+    }
+    resultEl.hidden = false;
+    showStatus(statusEl, 'Decryption successful.', 'ok');
+  } catch (err) {
+    showStatus(statusEl, userMessage(err), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
