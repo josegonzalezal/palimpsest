@@ -15,6 +15,7 @@ import {
   FLAGS_KEYFILE,
   FLAGS_PRF,
   VERSION,
+  MAX_PLAINTEXT_BYTES,
 } from '../src/crypto-core.mjs';
 import {
   embedInPng,
@@ -420,6 +421,55 @@ await test('16. Keyfile + password + PRF (all three factors)', async () => {
   // Wrong PRF → DECRYPTION_FAILED.
   const e3 = await decryptPayload(payload, 'password', { keyfileBytes: keyfile, getPrfSecret: wrongPrf }).then(() => null, e => e);
   assert.equal(e3.code, ErrorCodes.DECRYPTION_FAILED);
+});
+
+// ─── Test 17: file round-trip (name, MIME, binary content preserved) ──────────
+// Covers two paths: compressible binary (application/octet-stream → deflated)
+// and already-compressed format (image/jpeg → stored as-is, compressed=false).
+
+await test('17. File round-trip (name, MIME, binary content preserved)', async () => {
+  // Compressible binary: sequential bytes compress well.
+  const binData = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) binData[i] = i;
+
+  const p1 = await encryptPayload(
+    { type: 'file', name: 'data.bin', mime: 'application/octet-stream', data: binData },
+    'password', null, FAST,
+  );
+  const r1 = await decryptPayload(p1, 'password', null);
+  assert.equal(r1.type, 'file');
+  assert.equal(r1.name, 'data.bin');
+  assert.equal(r1.mime, 'application/octet-stream');
+  assert.deepEqual(Array.from(r1.data), Array.from(binData));
+
+  // Already-compressed format: compression is skipped (compressed flag = false).
+  // Round-trip must still be byte-identical.
+  const jpegBytes = crypto.getRandomValues(new Uint8Array(128));
+  const p2 = await encryptPayload(
+    { type: 'file', name: 'photo.jpg', mime: 'image/jpeg', data: jpegBytes },
+    'password', null, FAST,
+  );
+  const r2 = await decryptPayload(p2, 'password', null);
+  assert.equal(r2.name, 'photo.jpg');
+  assert.equal(r2.mime, 'image/jpeg');
+  assert.deepEqual(Array.from(r2.data), Array.from(jpegBytes));
+});
+
+// ─── Test 18: 25 MB payload ceiling ──────────────────────────────────────────
+// Size check fires before Argon2id so it is fast.
+
+await test('18. 25 MB payload ceiling (PAYLOAD_TOO_LARGE)', async () => {
+  // Positive control: tiny payload does not trigger the guard.
+  await encryptPayload({ type: 'text', data: 'ok' }, 'pw', null, FAST);
+
+  // Negative: one byte over the limit → PAYLOAD_TOO_LARGE.
+  const big = new Uint8Array(MAX_PLAINTEXT_BYTES + 1);
+  const err = await encryptPayload(
+    { type: 'file', name: 'big.bin', mime: 'application/octet-stream', data: big },
+    'pw', null, FAST,
+  ).then(() => null, e => e);
+  assert.ok(err instanceof PalimpsestError);
+  assert.equal(err.code, ErrorCodes.PAYLOAD_TOO_LARGE);
 });
 
 // ─── Summary ─────────────────────────────────────────────────────────────────

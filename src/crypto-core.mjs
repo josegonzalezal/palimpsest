@@ -40,6 +40,43 @@ export const FLAGS_PRF      = 0x02; // WebAuthn PRF secret was mixed into key ma
 
 export const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024; // 25 MB ceiling
 
+// ─── Compression skip list ────────────────────────────────────────────────────
+// These formats carry their own compression. Deflating them again wastes CPU
+// and may slightly inflate size. Text payloads always compress regardless.
+
+const ALREADY_COMPRESSED_MIME = new Set([
+  'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/avif',
+  'video/mp4', 'video/mpeg', 'video/webm', 'video/quicktime', 'video/x-matroska',
+  'video/x-msvideo', 'video/x-ms-wmv', 'video/3gpp',
+  'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/flac',
+  'audio/webm', 'audio/opus', 'audio/x-flac',
+  'application/zip', 'application/x-7z-compressed', 'application/x-rar-compressed',
+  'application/vnd.rar', 'application/x-bzip2', 'application/gzip',
+  'application/x-xz', 'application/zstd',
+  'application/pdf', 'font/woff', 'font/woff2',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+
+const ALREADY_COMPRESSED_EXT = new Set([
+  'jpg','jpeg','png','gif','webp','avif',
+  'mp4','mov','avi','mkv','webm','m4v','3gp',
+  'mp3','aac','m4a','ogg','flac','opus','wma',
+  'zip','7z','rar','gz','bz2','xz','zst','br',
+  'pdf','woff','woff2',
+  'docx','xlsx','pptx',
+]);
+
+export function isAlreadyCompressed(mime, name) {
+  if (mime && ALREADY_COMPRESSED_MIME.has(mime.toLowerCase())) return true;
+  if (name) {
+    const dot = name.lastIndexOf('.');
+    if (dot !== -1 && ALREADY_COMPRESSED_EXT.has(name.slice(dot + 1).toLowerCase())) return true;
+  }
+  return false;
+}
+
 export const ARGON2_DEFAULTS = { m: 65536, t: 3, p: 1 }; // m in KiB (64 MB)
 
 const ARGON2_LIMITS = {
@@ -206,9 +243,10 @@ export async function encryptPayload(payload, password, options, kdfParams = ARG
     );
   }
 
-  const typeFlag       = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
-  const compressedData = await compress(rawData);
-  const innerContent   = encodeContent(typeFlag, payload.name || '', payload.mime || '', compressedData, true);
+  const typeFlag      = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
+  const skipCompress  = payload.type === 'file' && isAlreadyCompressed(payload.mime, payload.name);
+  const innerData     = skipCompress ? rawData : await compress(rawData);
+  const innerContent  = encodeContent(typeFlag, payload.name || '', payload.mime || '', innerData, !skipCompress);
 
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
@@ -220,7 +258,7 @@ export async function encryptPayload(payload, password, options, kdfParams = ARG
     prfSecret = result.prfSecret;
     credId    = result.credId instanceof Uint8Array ? result.credId : new Uint8Array(result.credId);
   } else {
-    prfSalt   = new Uint8Array(32); // zeroed sentinel
+    prfSalt   = crypto.getRandomValues(new Uint8Array(32));
     prfSecret = null;
     credId    = new Uint8Array(0);
   }

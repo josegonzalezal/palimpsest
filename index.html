@@ -431,6 +431,34 @@ function u32be(n) { return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff,
 function readU16(b, o) { return (b[o] << 8) | b[o + 1]; }
 function readU32(b, o) { return ((b[o] << 24) | (b[o+1] << 16) | (b[o+2] << 8) | b[o+3]) >>> 0; }
 
+// ─── Compression skip list ────────────────────────────────────────────────────
+const ALREADY_COMPRESSED_MIME = new Set([
+  'image/jpeg','image/jpg','image/png','image/gif','image/webp','image/avif',
+  'video/mp4','video/mpeg','video/webm','video/quicktime','video/x-matroska',
+  'video/x-msvideo','video/x-ms-wmv','video/3gpp',
+  'audio/mpeg','audio/mp3','audio/mp4','audio/aac','audio/ogg','audio/flac',
+  'audio/webm','audio/opus','audio/x-flac',
+  'application/zip','application/x-7z-compressed','application/x-rar-compressed',
+  'application/vnd.rar','application/x-bzip2','application/gzip',
+  'application/x-xz','application/zstd',
+  'application/pdf','font/woff','font/woff2',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+const ALREADY_COMPRESSED_EXT = new Set([
+  'jpg','jpeg','png','gif','webp','avif',
+  'mp4','mov','avi','mkv','webm','m4v','3gp',
+  'mp3','aac','m4a','ogg','flac','opus','wma',
+  'zip','7z','rar','gz','bz2','xz','zst','br',
+  'pdf','woff','woff2','docx','xlsx','pptx',
+]);
+function isAlreadyCompressed(mime, name) {
+  if (mime && ALREADY_COMPRESSED_MIME.has(mime.toLowerCase())) return true;
+  if (name) { const dot = name.lastIndexOf('.'); if (dot !== -1 && ALREADY_COMPRESSED_EXT.has(name.slice(dot+1).toLowerCase())) return true; }
+  return false;
+}
+
 // ─── Compression ──────────────────────────────────────────────────────────────
 async function compress(data) {
   const cs = new CompressionStream('deflate-raw');
@@ -512,8 +540,10 @@ async function encryptPayload(payload, password, options, kdfParams) {
   const rawData = typeof payload.data === 'string' ? enc.encode(payload.data) : payload.data;
   if (rawData.length > MAX_PLAINTEXT_BYTES)
     throw new PalimpsestError(ErrorCodes.PAYLOAD_TOO_LARGE, 'Payload too large: ' + rawData.length + ' bytes');
-  const typeFlag = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
-  const inner = encodeContent(typeFlag, payload.name || '', payload.mime || '', await compress(rawData), true);
+  const typeFlag     = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
+  const skipCompress = payload.type === 'file' && isAlreadyCompressed(payload.mime, payload.name);
+  const innerData    = skipCompress ? rawData : await compress(rawData);
+  const inner        = encodeContent(typeFlag, payload.name || '', payload.mime || '', innerData, !skipCompress);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
   let prfSalt, prfSecret, credId;
@@ -523,7 +553,7 @@ async function encryptPayload(payload, password, options, kdfParams) {
     prfSecret = r.prfSecret;
     credId    = r.credId instanceof Uint8Array ? r.credId : new Uint8Array(r.credId);
   } else {
-    prfSalt = new Uint8Array(32); prfSecret = null; credId = new Uint8Array(0);
+    prfSalt = crypto.getRandomValues(new Uint8Array(32)); prfSecret = null; credId = new Uint8Array(0);
   }
   const flags   = (keyfileBytes ? FLAGS_KEYFILE : 0) | (getPrfResult ? FLAGS_PRF : 0);
   const kdfBlob = encodeKdfParams(kdfParams);
@@ -908,6 +938,9 @@ $('enc-submit').addEventListener('click', async () => {
   } else {
     const file = $('enc-file').files[0];
     if (!file) { showStatus(statusEl, 'No file selected.', 'error'); return; }
+    if (file.size > MAX_PLAINTEXT_BYTES) {
+      showStatus(statusEl, 'File too large: ' + (file.size / 1048576).toFixed(1) + ' MB. Maximum is 25 MB.', 'error'); return;
+    }
     payloadInput = { type: 'file', name: file.name, mime: file.type || 'application/octet-stream', data: await readFileAsBytes(file) };
   }
   if (outputType === 'png' && !$('enc-carrier').files[0]) {
