@@ -208,6 +208,9 @@ console.log('');
 console.log(`Results: ${passed} passed, ${pending} pending, ${failed} failed  (${total} total)`);
 console.log('');
 if (pending > 0) {
-  console.log(`Milestone exit gate: ${passed} of 9 brief tests green. Tests 1, 6–9 blocked on milestone 2 (LSB stego).`);
+  // Brief tests are 1–9. Tests 10–11 are additions; they don't count toward the
+  // 9-test gate but do count toward the total and must also be green.
+  const briefGreen = passed - 2; // subtract tests 10 and 11
+  console.log(`Milestone exit gate: ${briefGreen} of 9 brief tests green, ${passed} of 11 total. Tests 1, 6–9 blocked on milestone 2 (LSB stego).`);
 }
 if (failed > 0) process.exit(1);
