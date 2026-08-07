@@ -17,7 +17,9 @@ import {
 } from '../src/crypto-core.mjs';
 
 // Lighter KDF params for test speed — logic is identical, only cost differs.
-const FAST = { m: 1024, t: 1, p: 1 };
+// m must be >= ARGON2_LIMITS.m.min (8 MB = 8192 KiB) or decodeKdfParams rejects
+// the payload header on decryption, causing tests to pass for the wrong reason.
+const FAST = { m: 8192, t: 1, p: 1 };
 
 let passed = 0, failed = 0, pending = 0;
 
@@ -148,35 +150,38 @@ await test('9. Carrier with no payload: "not found" path, no crash', async () =>
   throw pendingError('LSB steganography not yet implemented (milestone 2)');
 });
 
-// ─── Test 10: prfSecret path — end-to-end with a stubbed secret ──────────────
-// The PRF secret is normally provided by a hardware key via WebAuthn. Here we
-// stub it with random bytes to verify that:
-//   (a) encrypt+decrypt with the same secret succeeds, and
-//   (b) decrypt without the secret (or with a different one) is rejected.
-// This exercises the key-material concatenation branch in buildKeyMaterial.
+// ─── Test 10: getPrfSecret callback — end-to-end with a stubbed secret ───────
+// The real callback drives a WebAuthn PRF round-trip: it receives the prfSalt
+// stored in the header and returns the secret the hardware key derives from it.
+// Here we stub it with a fixed secret to test the key-material path in isolation.
 
-await test('10. prfSecret path: round-trip and rejection', async () => {
-  const prfSecret = crypto.getRandomValues(new Uint8Array(32));
+await test('10. getPrfSecret callback: round-trip and rejection', async () => {
+  const prfSecret  = crypto.getRandomValues(new Uint8Array(32));
   const wrongSecret = crypto.getRandomValues(new Uint8Array(32));
+
+  // Stub: ignores the salt and always returns the same secret.
+  // A real implementation would pass the salt to navigator.credentials.get().
+  const correctCb = async (_prfSalt) => prfSecret;
+  const wrongCb   = async (_prfSalt) => wrongSecret;
 
   const payload = await encryptPayload(
     { type: 'text', data: 'hardware-key-protected' },
-    'password', 'pepper', prfSecret, FAST,
+    'password', 'pepper', correctCb, FAST,
   );
 
-  // Correct secret decrypts.
-  const result = await decryptPayload(payload, 'password', 'pepper', prfSecret);
+  // Same callback (same secret) decrypts.
+  const result = await decryptPayload(payload, 'password', 'pepper', correctCb);
   assert.equal(result.data, 'hardware-key-protected');
 
-  // No secret → wrong key material → decryption must fail.
+  // No callback → prfSecret absent from key material → must fail.
   await assert.rejects(
     decryptPayload(payload, 'password', 'pepper', null),
     /could not be decrypted/,
   );
 
-  // Different secret → wrong key material → decryption must fail.
+  // Different secret → wrong key material → must fail.
   await assert.rejects(
-    decryptPayload(payload, 'password', 'pepper', wrongSecret),
+    decryptPayload(payload, 'password', 'pepper', wrongCb),
     /could not be decrypted/,
   );
 });
