@@ -6,12 +6,16 @@
 import { argon2id } from 'hash-wasm';
 
 // ─── Error codes ─────────────────────────────────────────────────────────────
-// Internal codes for programmatic assertion; user-facing messages stay generic.
 
 export const ErrorCodes = {
-  NO_PAYLOAD_FOUND: 'NO_PAYLOAD_FOUND',
+  NO_PAYLOAD_FOUND:  'NO_PAYLOAD_FOUND',
   DECRYPTION_FAILED: 'DECRYPTION_FAILED',
   PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+  // Thrown before attempting decryption when the header flag is set but the
+  // caller did not supply the required factor. Separate from DECRYPTION_FAILED
+  // so the UI can prompt for the missing item rather than showing a generic error.
+  KEYFILE_REQUIRED:  'KEYFILE_REQUIRED',
+  PRF_REQUIRED:      'PRF_REQUIRED',
 };
 
 export class PalimpsestError extends Error {
@@ -25,19 +29,21 @@ export class PalimpsestError extends Error {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const MAGIC          = new Uint8Array([0x50, 0x4c, 0x4d, 0x50]); // "PLMP"
-export const VERSION        = 1;
+export const VERSION        = 2;
 export const KDF_ARGON2ID   = 0x02;
 export const CONTENT_TEXT   = 0x00;
 export const CONTENT_FILE   = 0x01;
 
-export const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024; // 25 MB global ceiling
+// Header flag bits (stored in the flags byte; authenticated as part of AAD).
+export const FLAGS_KEYFILE  = 0x01; // 32-byte keyfile was mixed into key material
+export const FLAGS_PRF      = 0x02; // WebAuthn PRF secret was mixed into key material
 
-// Benchmark target: ~1 s on a mid-range phone. Tune m/t before locking in.
-export const ARGON2_DEFAULTS = { m: 65536, t: 3, p: 1 }; // m in KiB
+export const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024; // 25 MB ceiling
 
-// Safe ranges for attacker-controlled header fields (fix 2).
+export const ARGON2_DEFAULTS = { m: 65536, t: 3, p: 1 }; // m in KiB (64 MB)
+
 const ARGON2_LIMITS = {
-  m: { min: 8192,  max: 262144 }, // 8 MB – 256 MB in KiB
+  m: { min: 8192,  max: 262144 },
   t: { min: 1,     max: 10     },
   p: { min: 1,     max: 4      },
 };
@@ -89,11 +95,16 @@ async function decompress(data) {
 }
 
 // ─── Key derivation ───────────────────────────────────────────────────────────
+// Key material = password ‖ keyfileBytes ‖ prfSecret (each part is optional
+// after the password). Concatenation is domain-separated by position and fixed
+// sizes: keyfileBytes is always exactly 32 bytes, prfSecret is always exactly
+// 32 bytes. Leaving either out changes the length and therefore the key.
 
-function buildKeyMaterial(password, pepper, prfSecret) {
+function buildKeyMaterial(password, keyfileBytes, prfSecret) {
   const enc = new TextEncoder();
-  const parts = [enc.encode(password), enc.encode(pepper)];
-  if (prfSecret) parts.push(prfSecret instanceof Uint8Array ? prfSecret : new Uint8Array(prfSecret));
+  const parts = [enc.encode(password)];
+  if (keyfileBytes) parts.push(keyfileBytes instanceof Uint8Array ? keyfileBytes : new Uint8Array(keyfileBytes));
+  if (prfSecret)    parts.push(prfSecret    instanceof Uint8Array ? prfSecret    : new Uint8Array(prfSecret));
   return concat(...parts);
 }
 
@@ -117,9 +128,6 @@ function encodeKdfParams(p) {
   return concat(new Uint8Array([KDF_ARGON2ID]), u32be(p.m), u32be(p.t), new Uint8Array([p.p]));
 }
 
-// FIX 2 — validate before use. The kdfParams header is unencrypted and
-// attacker-controlled; an m of 4 GB would hang or kill the tab. All out-of-range
-// values produce the same generic error to avoid revealing which field was bad.
 function decodeKdfParams(blob) {
   if (blob[0] !== KDF_ARGON2ID) throw new Error('unknown KDF');
   const m = readU32(blob, 1);
@@ -133,10 +141,6 @@ function decodeKdfParams(blob) {
 }
 
 // ─── Content header (inside the encrypted region) ────────────────────────────
-// FIX 4 — add compressed flag byte so decoding does not unconditionally call
-// decompress. Always 0x01 in v1; reserved so future callers (tier-2 carriers
-// whose files are already compressed) can set 0x00 without a format change.
-//
 // Layout: [type(1)] [compressed(1)] [nameLen(2)] [name] [mimeLen(2)] [mime] [content...]
 
 function encodeContent(typeFlag, name, mime, content, compressed) {
@@ -163,19 +167,35 @@ function decodeContent(buf) {
   return { typeFlag, compressed, name, mime, content: buf.slice(o) };
 }
 
-// ─── Payload format ───────────────────────────────────────────────────────────
-// Outer header (unencrypted, but authenticated — see FIX 3):
-//   [magic(4)] [version(1)] [kdfParamsLen(2)] [kdfParams(N)]
-//   [salt(16)] [prfSalt(32)] [iv(12)] [ciphertextLen(4)]
-// Followed by:
-//   [ciphertext(N)]  AES-256-GCM over compressed content header + content
+// ─── Payload format (version 2) ───────────────────────────────────────────────
 //
-// getPrfSecret signature: async (prfSalt: Uint8Array) => Uint8Array
-//   FIX 1 — the hardware key derives its secret FROM the prfSalt stored in the
-//   header. The caller cannot know that salt before the header is parsed, so this
-//   must be a callback rather than a pre-computed value. Pass null for no key.
+// Outer header (unencrypted, but fully authenticated as AES-GCM AAD):
+//   magic(4) version(1) flags(1) kdfParamsLen(2) kdfParams(N)
+//   salt(16) prfSalt(32) credIdLen(2) credId(M) iv(12) ciphertextLen(4)
+//
+// flags bits:
+//   FLAGS_KEYFILE (0x01) — keyfileBytes was mixed into key material
+//   FLAGS_PRF     (0x02) — WebAuthn PRF secret was mixed into key material
+//
+// prfSalt: 32 bytes, zeroed when FLAGS_PRF is not set.
+// credId:  M bytes (M = credIdLen), zero-length when FLAGS_PRF is not set.
+//          Identifies the WebAuthn credential for the PRF round-trip.
+//
+// Followed by: ciphertext (AES-256-GCM over the compressed content header)
+//
+// encryptPayload options:
+//   keyfileBytes?  Uint8Array — exactly 32 bytes; sets FLAGS_KEYFILE
+//   getPrfResult?  async (prfSalt: Uint8Array) => { credId: Uint8Array, prfSecret: Uint8Array }
+//                  Called once during encrypt to create/use a WebAuthn credential;
+//                  both the credential ID and PRF output are returned together.
+//
+// decryptPayload options:
+//   keyfileBytes?  Uint8Array — must match what was used during encryption
+//   getPrfSecret?  async (credId: Uint8Array, prfSalt: Uint8Array) => Uint8Array
+//                  Called during decrypt; credId comes from the header.
 
-export async function encryptPayload(payload, password, pepper, getPrfSecret = null, kdfParams = ARGON2_DEFAULTS) {
+export async function encryptPayload(payload, password, options, kdfParams = ARGON2_DEFAULTS) {
+  const { keyfileBytes = null, getPrfResult = null } = options ?? {};
   const enc = new TextEncoder();
   const rawData = typeof payload.data === 'string' ? enc.encode(payload.data) : payload.data;
 
@@ -188,43 +208,41 @@ export async function encryptPayload(payload, password, pepper, getPrfSecret = n
 
   const typeFlag       = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
   const compressedData = await compress(rawData);
-  // Compression applied to content only; flag is always 0x01 in v1.
   const innerContent   = encodeContent(typeFlag, payload.name || '', payload.mime || '', compressedData, true);
 
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv   = crypto.getRandomValues(new Uint8Array(12));
 
-  // FIX 1 — generate prfSalt FIRST, then pass it to the hardware key callback.
-  // The key derives its secret from this salt; storing a different salt in the
-  // header would make decryption derive a different key.
-  let prfSalt, prfSecret;
-  if (getPrfSecret) {
-    prfSalt   = crypto.getRandomValues(new Uint8Array(32));
-    prfSecret = await getPrfSecret(prfSalt);
+  let prfSalt, prfSecret, credId;
+  if (getPrfResult) {
+    prfSalt = crypto.getRandomValues(new Uint8Array(32));
+    const result = await getPrfResult(prfSalt);
+    prfSecret = result.prfSecret;
+    credId    = result.credId instanceof Uint8Array ? result.credId : new Uint8Array(result.credId);
   } else {
     prfSalt   = new Uint8Array(32); // zeroed sentinel
     prfSecret = null;
+    credId    = new Uint8Array(0);
   }
 
-  const kdfBlob       = encodeKdfParams(kdfParams);
-  // AES-GCM always appends a 16-byte auth tag; length is deterministic pre-encrypt.
+  const flags = (keyfileBytes ? FLAGS_KEYFILE : 0) | (getPrfResult ? FLAGS_PRF : 0);
+  const kdfBlob = encodeKdfParams(kdfParams);
   const ciphertextLen = innerContent.length + 16;
 
-  // FIX 3 — pass the full outer header as AES-GCM additionalData, binding the
-  // ciphertext to its header. Any modification to magic, version, kdfParams, salt,
-  // prfSalt, or iv causes the auth tag check to fail during decryption.
   const aad = concat(
     MAGIC,
-    new Uint8Array([VERSION]),
+    new Uint8Array([VERSION, flags]),
     u16be(kdfBlob.length),
     kdfBlob,
     salt,
     prfSalt,
+    u16be(credId.length),
+    credId,
     iv,
     u32be(ciphertextLen),
   );
 
-  const keyMat = buildKeyMaterial(password, pepper, prfSecret);
+  const keyMat = buildKeyMaterial(password, keyfileBytes, prfSecret);
   const key    = await deriveKey(keyMat, salt, kdfParams);
 
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
@@ -233,16 +251,13 @@ export async function encryptPayload(payload, password, pepper, getPrfSecret = n
     innerContent,
   ));
 
-  // Payload = aad || ciphertext. During decryption buf.slice(0, headerEnd) === aad.
   return concat(aad, ciphertext);
 }
 
-export async function decryptPayload(payloadBytes, password, pepper, getPrfSecret = null) {
+export async function decryptPayload(payloadBytes, password, options) {
   const buf = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes);
   let o = 0;
 
-  // Check magic before the broad try/catch so the two distinct error messages
-  // ("not found" vs "found but failed") remain separate without leaking detail.
   const magic = String.fromCharCode(...buf.slice(o, o + 4)); o += 4;
   if (magic !== 'PLMP') {
     throw new PalimpsestError(ErrorCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
@@ -251,42 +266,54 @@ export async function decryptPayload(payloadBytes, password, pepper, getPrfSecre
   let plain;
   try {
     const version = buf[o++];
-    if (version !== VERSION) throw new Error('unsupported version');
+    if (version !== VERSION) throw new Error(`unsupported version ${version}`);
+
+    const flags = buf[o++];
 
     const kdfParamsLen = readU16(buf, o); o += 2;
     const kdfBlob      = buf.slice(o, o + kdfParamsLen); o += kdfParamsLen;
-    const kdfParams    = decodeKdfParams(kdfBlob); // FIX 2: validates ranges here
+    const kdfParams    = decodeKdfParams(kdfBlob);
 
     const salt    = buf.slice(o, o + 16); o += 16;
-    const prfSalt = buf.slice(o, o + 32); o += 32; // FIX 1: read, not skip
-    const iv      = buf.slice(o, o + 12); o += 12;
-    const ctLen   = readU32(buf, o);      o += 4;
+    const prfSalt = buf.slice(o, o + 32); o += 32;
 
-    // FIX 3 — buf.slice(0, o) is exactly the aad written during encryption.
+    const credIdLen = readU16(buf, o); o += 2;
+    const credId    = buf.slice(o, o + credIdLen); o += credIdLen;
+
+    const iv    = buf.slice(o, o + 12); o += 12;
+    const ctLen = readU32(buf, o);      o += 4;
+
     const aad = buf.slice(0, o);
     const ct  = buf.slice(o, o + ctLen);
 
-    // FIX 1 — pass the stored prfSalt to the callback so the hardware key can
-    // reproduce the same secret it derived during encryption.
-    const prfSecret = getPrfSecret ? await getPrfSecret(prfSalt) : null;
-    const keyMat    = buildKeyMaterial(password, pepper, prfSecret);
+    const { keyfileBytes = null, getPrfSecret = null } = options ?? {};
+
+    // Check required factors BEFORE the expensive key derivation.
+    // This gives the caller a specific code to act on rather than a generic failure.
+    if ((flags & FLAGS_KEYFILE) && !keyfileBytes) {
+      throw new PalimpsestError(ErrorCodes.KEYFILE_REQUIRED, 'This payload was encrypted with a keyfile — please load it');
+    }
+    if ((flags & FLAGS_PRF) && !getPrfSecret) {
+      throw new PalimpsestError(ErrorCodes.PRF_REQUIRED, 'This payload was encrypted with a hardware security key');
+    }
+
+    const prfSecret = getPrfSecret ? await getPrfSecret(credId, prfSalt) : null;
+    const keyMat    = buildKeyMaterial(password, keyfileBytes, prfSecret);
     const key       = await deriveKey(keyMat, salt, kdfParams);
 
     plain = new Uint8Array(await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv, additionalData: aad }, // FIX 3
+      { name: 'AES-GCM', iv, additionalData: aad },
       key,
       ct,
     ));
-  } catch {
-    // Wrong password, wrong pepper, tampered header, tampered ciphertext — all
-    // produce the same message. Distinguishing them would help an attacker.
+  } catch (e) {
+    // Re-throw our own errors (KEYFILE_REQUIRED, PRF_REQUIRED) unchanged.
+    if (e instanceof PalimpsestError) throw e;
     throw new PalimpsestError(ErrorCodes.DECRYPTION_FAILED, 'Payload found but could not be decrypted');
   }
 
-  // decodeContent and decompress are outside the try/catch: a failure here is a
-  // programming bug (decryption succeeded but content is malformed), not user error.
   const { typeFlag, compressed, name, mime, content } = decodeContent(plain);
-  const rawContent = compressed ? await decompress(content) : content; // FIX 4
+  const rawContent = compressed ? await decompress(content) : content;
   const dec = new TextDecoder();
 
   return {
@@ -319,7 +346,6 @@ export function armorPayload(bytes) {
   return `${ARMOR_HEADER}\nVersion: ${VERSION}\n\n${lines.join('\n')}\n${ARMOR_FOOTER}`;
 }
 
-// Returns null if no armor block is found (caller decides whether that is an error).
 export function unarmorPayload(text) {
   const s = text.trim();
   const hi = s.indexOf(ARMOR_HEADER);
