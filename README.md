@@ -11,12 +11,12 @@ file. All cryptography runs in the browser — the server never sees plaintext.
 | Milestone | State |
 |---|---|
 | 1 — Crypto core | Done |
-| 2 — LSB steganography over PNG | In progress |
+| 2 — LSB steganography over PNG | Done |
 | 3 — Self-contained HTML client | Not started |
 | 4 — Pepper backend (Next.js + Supabase) | Not started |
 | 5 — Arbitrary files, extra carriers, WebAuthn, ephemeral state | Not started |
 
-Test suite: 6 of 11 green, 5 blocked on Milestone 2.
+Test suite: 11 of 11 green.
 
 ## Security notice
 
