@@ -12,7 +12,7 @@ file. All cryptography runs in the browser — the server never sees plaintext.
 |---|---|
 | 1 — Crypto core | Done |
 | 2 — LSB steganography over PNG | Done |
-| 3 — Self-contained HTML client | Not started |
+| 3 — Self-contained HTML client | Done |
 | 4 — Pepper backend (Next.js + Supabase) | Not started |
 | 5 — Arbitrary files, extra carriers, WebAuthn, ephemeral state | Not started |
 
@@ -96,13 +96,19 @@ sending through a service that re-encodes will silently destroy the payload.
 
 ```bash
 npm install
-npm test                                    # headless crypto suite
+npm test          # headless crypto suite (Node.js, pngjs)
+npm run build     # compile index.html from src/client.template.html
+```
+
+Open `index.html` directly — no server needed. The file runs under
+`file://` without any network requests.
+
+`scripts/demo.mjs` exercises the crypto core from the command line:
+
+```bash
 node scripts/demo.mjs encrypt <password> <pepper> "secret message"
 node scripts/demo.mjs decrypt <password> <pepper>
 ```
-
-There is no UI yet. `scripts/demo.mjs` exercises the crypto core from the
-command line.
 
 ## Design notes
 
@@ -118,6 +124,18 @@ is that you can read the code. That is the correct trade.
 in homemade obfuscation adds zero bits of security while introducing real risks —
 nonce reuse, padding oracles, timing side channels — and makes the design
 impossible to audit.
+
+**`connect-src 'none'` is the real protection in the single-file client, not
+`script-src`.** A self-contained HTML file cannot avoid `script-src 'unsafe-inline'`
+— there is nowhere else for the inline `<script>` block to come from. Inline
+scripts are not in themselves a problem: the threat `unsafe-inline` opens is
+exfiltration (injected code reads the plaintext and phones home). That path is
+closed at the network layer. `default-src 'none'` sets `connect-src 'none'`,
+which means the page cannot make *any* outbound request — no `fetch`, no XHR, no
+WebSocket, no beacon, no image load. Even if an attacker injected arbitrary
+JavaScript, it could not leave the page. The single-file design and
+the network lockdown are the same property stated two ways: no network means
+both no dependency and no exfiltration.
 
 **The pepper is per-user but encrypted at rest** with a master key held only in an
 environment variable. A per-user pepper alone does not survive a database dump; a
