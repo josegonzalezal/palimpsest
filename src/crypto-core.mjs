@@ -5,6 +5,23 @@
 
 import { argon2id } from 'hash-wasm';
 
+// ─── Error codes ─────────────────────────────────────────────────────────────
+// Internal codes for programmatic assertion; user-facing messages stay generic.
+
+export const ErrorCodes = {
+  NO_PAYLOAD_FOUND: 'NO_PAYLOAD_FOUND',
+  DECRYPTION_FAILED: 'DECRYPTION_FAILED',
+  PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+};
+
+export class PalimpsestError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'PalimpsestError';
+    this.code = code;
+  }
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const MAGIC          = new Uint8Array([0x50, 0x4c, 0x4d, 0x50]); // "PLMP"
@@ -163,7 +180,10 @@ export async function encryptPayload(payload, password, pepper, getPrfSecret = n
   const rawData = typeof payload.data === 'string' ? enc.encode(payload.data) : payload.data;
 
   if (rawData.length > MAX_PLAINTEXT_BYTES) {
-    throw new Error(`Payload too large: ${rawData.length} bytes exceeds the ${MAX_PLAINTEXT_BYTES / 1024 / 1024} MB limit`);
+    throw new PalimpsestError(
+      ErrorCodes.PAYLOAD_TOO_LARGE,
+      `Payload too large: ${rawData.length} bytes exceeds the ${MAX_PLAINTEXT_BYTES / 1024 / 1024} MB limit`,
+    );
   }
 
   const typeFlag       = payload.type === 'text' ? CONTENT_TEXT : CONTENT_FILE;
@@ -224,7 +244,9 @@ export async function decryptPayload(payloadBytes, password, pepper, getPrfSecre
   // Check magic before the broad try/catch so the two distinct error messages
   // ("not found" vs "found but failed") remain separate without leaking detail.
   const magic = String.fromCharCode(...buf.slice(o, o + 4)); o += 4;
-  if (magic !== 'PLMP') throw new Error('No payload found in this carrier');
+  if (magic !== 'PLMP') {
+    throw new PalimpsestError(ErrorCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  }
 
   let plain;
   try {
@@ -258,7 +280,7 @@ export async function decryptPayload(payloadBytes, password, pepper, getPrfSecre
   } catch {
     // Wrong password, wrong pepper, tampered header, tampered ciphertext — all
     // produce the same message. Distinguishing them would help an attacker.
-    throw new Error('Payload found but could not be decrypted');
+    throw new PalimpsestError(ErrorCodes.DECRYPTION_FAILED, 'Payload found but could not be decrypted');
   }
 
   // decodeContent and decompress are outside the try/catch: a failure here is a
