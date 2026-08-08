@@ -8,7 +8,7 @@ or the wipe/clear-data path. Mark the date and browser when passing.
 
 ---
 
-## 1. Canvas PNG round-trip
+## 1. Canvas PNG round-trip — text payload
 
 **Why it exists:** the Node.js tests use pngjs to decode PNG files. The browser
 uses `canvas.getContext('2d').drawImage` + `getImageData`, which is a different
@@ -18,17 +18,40 @@ handling) would pass all automated tests.
 **Steps:**
 
 1. Open `index.html` directly (`file://` URL) or the GitHub Pages build.
-2. Select *Encrypt* → *File* → pick any opaque PNG (e.g. a screenshot).
-3. Select *Output* → *Embed in PNG carrier* → pick a second, larger opaque PNG.
+2. Select *Encrypt* → *Text message* → type a short message.
+3. Select *Output* → *Embed in PNG carrier* → pick a large opaque PNG.
 4. Click *Encrypt*. Download the stego PNG.
-5. Reload the page (clears in-memory key material).
-6. Select *Decrypt* → *PNG carrier* → upload the stego PNG you just downloaded.
+5. Reload the page.
+6. Select *Decrypt* → *PNG carrier* → upload the stego PNG.
 7. Enter the same password. Click *Decrypt*.
-8. Confirm: the decrypted file downloads and is **byte-identical** to the original
-   (compare SHA-256 hashes with `certutil -hashfile <file> SHA256` on Windows or
-   `shasum -a 256 <file>` on macOS/Linux).
+8. Confirm the message matches exactly.
 
-**Pass criteria:** byte-identical recovery, no error messages.
+**Pass criteria:** exact text recovery, no error messages.
+
+---
+
+## 1b. Canvas PNG round-trip — binary file payload
+
+**Why it exists:** covers the file-encryption path through the canvas codec.
+A regression in the compressed-flag logic or the content-header decode would
+fail here but not in the text test.
+
+**Steps:**
+
+1. Open `index.html` (or the GitHub Pages build).
+2. Select *Encrypt* → *File* → pick a **PDF or a photo** (any binary file ≤ 25 MB).
+3. Note the file's SHA-256 hash before encrypting:
+   - Windows: `certutil -hashfile <file> SHA256`
+   - macOS/Linux: `shasum -a 256 <file>`
+4. Select *Output* → *Embed in PNG carrier* → pick a large opaque PNG carrier.
+5. Click *Encrypt*. Download the stego PNG.
+6. Reload the page.
+7. Select *Decrypt* → *PNG carrier* → upload the stego PNG. Enter the same password.
+8. Download the decrypted file. Compute its SHA-256 hash.
+
+**Pass criteria:** the two hashes are **identical**. A file that "opens fine" is
+not sufficient — a truncated or partially-corrupt binary can still open while
+failing the hash check.
 
 ---
 
@@ -99,9 +122,7 @@ inside the authenticator.
 
 ---
 
-## 4. Wipe / clear-data button
-
-*(Added in Milestone 5b. Perform after that milestone ships.)*
+## 4. Wipe / clear-data button (Milestone 5b)
 
 **Why it exists:** the wipe is a best-effort cleanup of browser-held state. It
 cannot be verified by inspecting return values alone — the check is whether the
@@ -109,20 +130,35 @@ expected storages are actually empty afterward.
 
 **Steps:**
 
-1. Open the tool. Encrypt something. Leave the result on screen.
-2. Open browser DevTools → Application → Storage. Note any entries in
-   localStorage, sessionStorage, IndexedDB, and Cache Storage for this origin.
-3. Click *Clear all data this tool created*. Confirm the dialog.
+1. Open the tool. Decrypt something so plaintext is on screen. Load a keyfile
+   so key material is in memory.
+2. Open browser DevTools → Application tab. Note any entries under:
+   - Local Storage
+   - Session Storage
+   - IndexedDB
+   - Cache Storage
+   (Palimpsest does not currently write to these, but third-party tooling might;
+   confirm the stores are empty or note what is there.)
+3. Click *Clear all data this tool created* in the footer bar. Confirm the modal.
 4. **Expected:** the page reloads. All storage entries for this origin are gone.
-   The key material and plaintext that were in memory are no longer accessible
-   (verify by inspecting the page's JS heap in the Memory tab if needed).
+   The decrypted plaintext is no longer visible. The keyfile state is gone.
+5. Open DevTools → Memory tab → *Take heap snapshot*. Search for the password
+   or plaintext string you used. It should not appear in live string objects
+   (note: it may still appear in the snapshot infrastructure itself; that is
+   acceptable).
 
-**What the wipe cannot touch (document in the UI and verify here):**
+**Inactivity timer:**
 
-- Browser HTTP cache: cached responses for the page itself remain. The wipe does
-  not call `caches.delete()` for the navigation cache.
-- Browser history: `index.html` remains in the history list.
-- Address bar autocomplete: previously typed URLs remain.
-- Memory already released to the OS before the wipe ran.
-- Swap / hibernation images that captured memory before the wipe.
-- Any copy the user made of decrypted content (clipboard, downloads folder).
+6. Open the tool. Expand *Settings & limits* in the footer. Set timeout to 1 minute.
+7. Do not interact with the page for 1 minute.
+8. **Expected:** the page reloads automatically without any user action.
+9. Confirm the timer resets when you move the mouse or press a key.
+
+**What the wipe cannot touch (verify these remain as claimed):**
+
+- Browser HTTP cache: `index.html` is still served from cache after wipe.
+- Browser history: the URL still appears in the history list.
+- Address bar autocomplete: the URL still appears as a suggestion.
+- Memory released to the OS before the wipe ran.
+- Swap files or hibernation images captured before the wipe.
+- Clipboard contents or files in the downloads folder.

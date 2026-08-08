@@ -30,7 +30,7 @@ body {
   line-height: 1.6;
   color: #111;
   background: #fff;
-  padding: 2rem 1rem 4rem;
+  padding: 2rem 1rem 6rem;
 }
 main { max-width: 580px; margin: 0 auto; }
 
@@ -158,6 +158,38 @@ a.download-link {
 .modal-body p + p { margin-top: 0.625rem; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.625rem; }
 
+.security-footer {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: #f4f4f4; border-top: 1px solid #ddd;
+  z-index: 50; font-size: 0.8125rem;
+}
+.security-footer-bar {
+  display: flex; align-items: center; gap: 0.875rem; flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+}
+.wipe-btn {
+  padding: 0.3125rem 0.75rem;
+  background: #fff; color: #8b0000;
+  border: 1px solid #ddb0b0; border-radius: 3px;
+  font-family: inherit; font-size: 0.8125rem; cursor: pointer;
+}
+.wipe-btn:hover { background: #fff4f4; border-color: #cc8888; }
+.timer-display { color: #666; font-variant-numeric: tabular-nums; margin-left: auto; }
+.wipe-toggle-btn {
+  background: none; border: none; color: #888;
+  font-family: inherit; font-size: 0.8125rem; cursor: pointer; padding: 0;
+}
+.wipe-toggle-btn:hover { color: #444; }
+.wipe-settings-body { padding: 0.625rem 1rem 0.75rem; border-top: 1px solid #ddd; }
+.wipe-timeout-row { display: flex; align-items: center; gap: 0.375rem; margin-bottom: 0.5rem; color: #444; }
+.wipe-timeout-row input[type="number"] {
+  width: 3.5rem; padding: 0.1875rem 0.375rem;
+  border: 1px solid #ccc; border-radius: 3px;
+  font-family: inherit; font-size: 0.8125rem; color: #111; background: #fff;
+}
+.wipe-limits-note { color: #555; line-height: 1.55; font-size: 0.8rem; }
+.wipe-limits-note strong { color: #333; }
+
 @media (prefers-color-scheme: dark) {
   body { background: #141414; color: #ddd; }
   .tagline { color: #888; }
@@ -193,6 +225,16 @@ a.download-link {
   .modal-box { background: #1e1e1e; border: 1px solid #3a3a3a; }
   .modal-body { color: #bbb; }
   .modal-body strong { color: #ddd; }
+  .security-footer { background: #1a1a1a; border-top-color: #333; }
+  .wipe-btn { background: #222; color: #f88; border-color: #5a2a2a; }
+  .wipe-btn:hover { background: #2a1414; }
+  .timer-display, .wipe-toggle-btn { color: #888; }
+  .wipe-toggle-btn:hover { color: #ccc; }
+  .wipe-settings-body { border-top-color: #333; }
+  .wipe-timeout-row { color: #bbb; }
+  .wipe-timeout-row input[type="number"] { background: #1e1e1e; color: #ddd; border-color: #555; }
+  .wipe-limits-note { color: #888; }
+  .wipe-limits-note strong { color: #aaa; }
 }
   </style>
 </head>
@@ -364,6 +406,27 @@ a.download-link {
   </section>
 
 </main>
+
+<!-- ═══════════════════════════════ FOOTER ══════════════════════════════════ -->
+<footer class="security-footer">
+  <div class="security-footer-bar">
+    <button type="button" id="wipe-btn" class="wipe-btn">Clear all data this tool created</button>
+    <span id="timer-display" class="timer-display"></span>
+    <button type="button" id="wipe-toggle-btn" class="wipe-toggle-btn">Settings &amp; limits &#9656;</button>
+  </div>
+  <div id="wipe-settings-body" class="wipe-settings-body" hidden>
+    <label class="wipe-timeout-row">
+      Auto-wipe after
+      <input type="number" id="timer-input" min="1" max="60" value="5">
+      minutes of inactivity
+    </label>
+    <p class="wipe-limits-note">
+      <strong>Cannot touch:</strong> browser HTTP cache, browsing history, address
+      bar autocomplete, memory already released to the OS before this ran, swap
+      files, or hibernation images.
+    </p>
+  </div>
+</footer>
 
 <!-- ═══════════════════════════════ MODAL ═══════════════════════════════════ -->
 <div id="modal" class="modal-overlay" hidden aria-modal="true" role="dialog">
@@ -1049,6 +1112,85 @@ $('dec-submit').addEventListener('click', async () => {
     btn.disabled = false;
     updateNotice();
   }
+});
+
+// ─── Wipe / ephemeral state ───────────────────────────────────────────────────
+let inactivityMs  = 5 * 60 * 1000;
+let wipeAt        = Date.now() + inactivityMs;
+let inactivityTimer;
+
+async function clearAllData() {
+  // Zero key material held in module-level variables before the page unloads.
+  if (encKeyfileBytes) { encKeyfileBytes.fill(0); encKeyfileBytes = null; }
+  if (decKeyfileBytes) { decKeyfileBytes.fill(0); decKeyfileBytes = null; }
+  if (encPrfCredId)    { encPrfCredId.fill(0);    encPrfCredId    = null; }
+  encPrfGetResult = null; encPrfRegistered = false;
+  decKeyfileLoaded = false; encKeyfileLoaded = false;
+
+  // Revoke blob URLs so backing store is freed immediately.
+  document.querySelectorAll('a.download-link[href^="blob:"]').forEach(a => URL.revokeObjectURL(a.href));
+
+  // Clear displayed plaintext and results.
+  ['enc-result', 'dec-result'].forEach(id => { $(id).innerHTML = ''; $(id).hidden = true; });
+  ['enc-status', 'dec-status'].forEach(id => { $(id).hidden = true; });
+
+  // Best-effort storage clear (Palimpsest does not write to these, but belt-and-suspenders).
+  try { localStorage.clear(); } catch (_) {}
+  try { sessionStorage.clear(); } catch (_) {}
+  try {
+    const dbs = await indexedDB.databases();
+    await Promise.all(dbs.map(db => new Promise(res => {
+      const req = indexedDB.deleteDatabase(db.name);
+      req.onsuccess = req.onerror = res;
+    })));
+  } catch (_) {}
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+  } catch (_) {}
+
+  location.reload();
+}
+
+function resetInactivityTimer() {
+  clearTimeout(inactivityTimer);
+  wipeAt        = Date.now() + inactivityMs;
+  inactivityTimer = setTimeout(() => clearAllData(), inactivityMs);
+}
+
+function updateCountdown() {
+  const secs = Math.max(0, Math.ceil((wipeAt - Date.now()) / 1000));
+  const m = Math.floor(secs / 60), s = secs % 60;
+  $('timer-display').textContent = 'Auto-wipe: ' + m + ':' + String(s).padStart(2, '0');
+}
+
+setInterval(updateCountdown, 1000);
+updateCountdown();
+resetInactivityTimer();
+
+['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(ev =>
+  document.addEventListener(ev, resetInactivityTimer, { passive: true })
+);
+
+$('timer-input').addEventListener('change', function () {
+  const mins = Math.max(1, Math.min(60, parseInt(this.value, 10) || 5));
+  this.value   = mins;
+  inactivityMs  = mins * 60 * 1000;
+  resetInactivityTimer();
+});
+
+$('wipe-toggle-btn').addEventListener('click', function () {
+  const body = $('wipe-settings-body');
+  body.hidden = !body.hidden;
+  this.innerHTML = 'Settings &amp; limits ' + (body.hidden ? '&#9656;' : '&#9662;');
+});
+
+$('wipe-btn').addEventListener('click', async () => {
+  const ok = await showModal('Clear all data this tool created',
+    '<p>Clears this origin\'s localStorage, sessionStorage, IndexedDB, and Cache Storage, then reloads the page.</p>' +
+    '<p><strong>Cannot touch:</strong> browser HTTP cache, browsing history, address bar autocomplete, ' +
+    'memory already released to the OS before this ran, swap files, or hibernation images.</p>');
+  if (ok) await clearAllData();
 });
 </script>
 </body>

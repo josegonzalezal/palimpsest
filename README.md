@@ -15,8 +15,10 @@ server is required.
 | 2 — LSB steganography over PNG | Done |
 | 3 — Self-contained HTML client | Done |
 | 4 — Local second factor (keyfile + WebAuthn PRF) + GitHub Pages | Done |
+| 5a — Arbitrary file encryption (documents, images, audio, video, archives) | Done |
+| 5b — Ephemeral state (inactivity timer + wipe button) | Done |
 
-Test suite: 16 of 16 green.
+Test suite: 18 of 18 green.
 
 ## Security notice
 
@@ -87,7 +89,7 @@ flags        1 B   FLAGS_KEYFILE (0x01) | FLAGS_PRF (0x02)
 kdfParamsLen 2 B   uint16
 kdfParams    N B   [KDF ID][params...] (0x02 = Argon2id)
 salt        16 B
-prfSalt     32 B   zeroed when FLAGS_PRF is not set
+prfSalt     32 B   random when FLAGS_PRF is not set (random to avoid leaking PRF absence)
 credIdLen    2 B   uint16
 credId       M B   WebAuthn credential ID; zero-length when FLAGS_PRF not set
 iv          12 B
