@@ -17,8 +17,9 @@ server is required.
 | 4 — Local second factor (keyfile + WebAuthn PRF) + GitHub Pages | Done |
 | 5a — Arbitrary file encryption (documents, images, audio, video, archives) | Done |
 | 5b — Ephemeral state (inactivity timer + wipe button) | Done |
+| 5c — WAV carrier (LSB over PCM samples, Tier 1 — hidden) | Done |
 
-Test suite: 18 of 18 green.
+Test suite: 21 of 21 green.
 
 ## Security notice
 

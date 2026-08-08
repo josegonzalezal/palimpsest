@@ -117,6 +117,7 @@ legend { font-size: 0.875rem; font-weight: 500; color: #333; padding: 0 0.25rem;
 
 .capacity-info { font-size: 0.8125rem; color: #555; margin-top: 0.375rem; }
 .capacity-info.error { color: #a00; }
+.tier-badge { font-size: 0.75rem; color: #666; background: #eee; padding: 0.1em 0.4em; border-radius: 3px; white-space: nowrap; }
 
 .btn-primary {
   display: inline-block; padding: 0.5rem 1.25rem;
@@ -222,6 +223,7 @@ a.download-link {
   .keyfile-status.err { color: #f88; }
   .capacity-info { color: #aaa; }
   .capacity-info.error { color: #f88; }
+  .tier-badge { color: #999; background: #2a2a2a; }
   .btn-primary { background: #ddd; color: #141414; }
   .btn-primary:hover:not(:disabled) { background: #bbb; }
   .status.ok      { color: #7fc97f; background: #081808; }
@@ -337,13 +339,19 @@ a.download-link {
     <fieldset>
       <legend>Output</legend>
       <div class="radio-group">
-        <label><input type="radio" name="enc-output" value="png" checked> Embed in PNG carrier</label>
+        <label><input type="radio" name="enc-output" value="png" checked> Embed in PNG carrier <span class="tier-badge">Tier 1 — hidden</span></label>
+        <label><input type="radio" name="enc-output" value="wav"> Embed in WAV carrier <span class="tier-badge">Tier 1 — hidden</span></label>
         <label><input type="radio" name="enc-output" value="armored"> Armored text</label>
       </div>
       <div id="enc-carrier-area" class="sub-content">
         <label for="enc-carrier">Carrier PNG</label>
         <input type="file" id="enc-carrier" accept="image/png">
         <div id="enc-capacity" class="capacity-info" hidden></div>
+      </div>
+      <div id="enc-wav-area" class="sub-content" hidden>
+        <label for="enc-wav-carrier">Carrier WAV (uncompressed PCM)</label>
+        <input type="file" id="enc-wav-carrier" accept="audio/wav,audio/wave,.wav">
+        <div id="enc-wav-capacity" class="capacity-info" hidden></div>
       </div>
     </fieldset>
 
@@ -392,11 +400,16 @@ a.download-link {
       <legend>Source</legend>
       <div class="radio-group">
         <label><input type="radio" name="dec-input" value="png" checked> PNG carrier</label>
+        <label><input type="radio" name="dec-input" value="wav"> WAV carrier</label>
         <label><input type="radio" name="dec-input" value="armored"> Armored text</label>
       </div>
       <div id="dec-png-area" class="sub-content">
         <label for="dec-carrier">Carrier PNG</label>
         <input type="file" id="dec-carrier" accept="image/png">
+      </div>
+      <div id="dec-wav-area" class="sub-content" hidden>
+        <label for="dec-wav-carrier">Carrier WAV</label>
+        <input type="file" id="dec-wav-carrier" accept="audio/wav,audio/wave,.wav">
       </div>
       <div id="dec-armored-area" class="sub-content" hidden>
         <label for="dec-armored">Armored message</label>
@@ -428,9 +441,11 @@ a.download-link {
       minutes of inactivity
     </label>
     <p class="wipe-limits-note">
-      <strong>Cannot touch:</strong> browser HTTP cache, browsing history, address
-      bar autocomplete, memory already released to the OS before this ran, swap
-      files, or hibernation images.
+      <strong>Cannot touch:</strong> passwords or text you typed (JS strings are
+      immutable — the engine may hold copies the wipe cannot reach), browser HTTP
+      cache, browsing history, address bar autocomplete, memory already released
+      to the OS, swap files, or hibernation images. Closing the browser tab is
+      stronger.
     </p>
   </div>
 </footer>
@@ -481,6 +496,15 @@ const StegoCodes = {
 class StegoError extends Error {
   constructor(code, message) { super(message); this.name = 'StegoError'; this.code = code; }
 }
+const WavCodes = {
+  CAPACITY_EXCEEDED: 'CAPACITY_EXCEEDED',
+  NO_PAYLOAD_FOUND:  'NO_PAYLOAD_FOUND',
+  WAV_NOT_PCM:       'WAV_NOT_PCM',
+  WAV_MALFORMED:     'WAV_MALFORMED',
+};
+class WavStegoError extends Error {
+  constructor(code, message) { super(message); this.name = 'WavStegoError'; this.code = code; }
+}
 
 // ─── Buffer helpers ───────────────────────────────────────────────────────────
 function concat(...arrays) {
@@ -493,6 +517,8 @@ function u16be(n) { return new Uint8Array([(n >> 8) & 0xff, n & 0xff]); }
 function u32be(n) { return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]); }
 function readU16(b, o) { return (b[o] << 8) | b[o + 1]; }
 function readU32(b, o) { return ((b[o] << 24) | (b[o+1] << 16) | (b[o+2] << 8) | b[o+3]) >>> 0; }
+function readU16le(b, o) { return (b[o] | (b[o+1] << 8)) >>> 0; }
+function readU32le(b, o) { return (b[o] | (b[o+1] << 8) | (b[o+2] << 16) | (b[o+3] << 24)) >>> 0; }
 
 // ─── Compression skip list ────────────────────────────────────────────────────
 const ALREADY_COMPRESSED_MIME = new Set([
@@ -735,6 +761,83 @@ async function extractFromPng(pngBytes) {
   return payload;
 }
 
+// ─── WAV LSB steganography ────────────────────────────────────────────────────
+// Capacity: floor(dataSizeBytes / 8). Carrier must be uncompressed PCM (fmt=1).
+// Stream: [u32be(len): 4 B][payload]. Same layout as PNG stego.
+
+function wavCapacity(dataSize) { return Math.floor(dataSize / 8); }
+
+function parseWavHeader(b) {
+  if (b.length < 12 ||
+      String.fromCharCode(b[0],b[1],b[2],b[3]) !== 'RIFF' ||
+      String.fromCharCode(b[8],b[9],b[10],b[11]) !== 'WAVE')
+    throw new WavStegoError(WavCodes.WAV_MALFORMED, 'Not a WAV file');
+  let pos = 12, audioFmt = -1, dataStart = -1, dataSize = 0;
+  while (pos + 8 <= b.length) {
+    const id   = String.fromCharCode(b[pos],b[pos+1],b[pos+2],b[pos+3]);
+    const size = readU32le(b, pos + 4);
+    const body = pos + 8;
+    if (id === 'fmt ') {
+      if (size < 16) throw new WavStegoError(WavCodes.WAV_MALFORMED, 'fmt chunk too small');
+      audioFmt = readU16le(b, body);
+    } else if (id === 'data') {
+      dataStart = body; dataSize = size; break;
+    }
+    pos = body + size + (size & 1);
+  }
+  if (audioFmt < 0) throw new WavStegoError(WavCodes.WAV_MALFORMED, 'No fmt chunk found');
+  if (dataStart < 0) throw new WavStegoError(WavCodes.WAV_MALFORMED, 'No data chunk found');
+  if (audioFmt !== 1) throw new WavStegoError(WavCodes.WAV_NOT_PCM,
+    'WAV format ' + audioFmt + ' is not uncompressed PCM (expected 1). Re-export as 16-bit PCM WAV.');
+  return { dataStart, dataSize };
+}
+
+function wavWriteLsbs(samples, stream) {
+  for (let i = 0; i < stream.length; i++) {
+    const byte = stream[i];
+    for (let bit = 0; bit < 8; bit++) {
+      const si = i * 8 + bit;
+      samples[si] = (samples[si] & 0xfe) | ((byte >>> (7 - bit)) & 1);
+    }
+  }
+}
+function wavReadLsbs(samples, numBytes) {
+  const out = new Uint8Array(numBytes);
+  for (let i = 0; i < numBytes; i++) {
+    let byte = 0;
+    for (let bit = 0; bit < 8; bit++) byte |= (samples[i * 8 + bit] & 1) << (7 - bit);
+    out[i] = byte;
+  }
+  return out;
+}
+
+function embedInWav(wavBytes, payloadBytes) {
+  const b = new Uint8Array(wavBytes);
+  const { dataStart, dataSize } = parseWavHeader(b);
+  const cap = wavCapacity(dataSize), req = STEGO_PREFIX + payloadBytes.length;
+  if (req > cap) throw new WavStegoError(WavCodes.CAPACITY_EXCEEDED,
+    'Carrier too small: need ' + req + ' B but capacity is ' + cap + ' B (data chunk is ' + dataSize + ' B).');
+  const out = new Uint8Array(b), samples = out.subarray(dataStart, dataStart + dataSize);
+  const stream = new Uint8Array(req);
+  stream.set(mkU32(payloadBytes.length)); stream.set(payloadBytes, STEGO_PREFIX);
+  wavWriteLsbs(samples, stream);
+  return out;
+}
+function extractFromWav(wavBytes) {
+  const b = new Uint8Array(wavBytes);
+  const { dataStart, dataSize } = parseWavHeader(b);
+  const cap = wavCapacity(dataSize);
+  if (cap < STEGO_PREFIX) throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  const samples = b.subarray(dataStart, dataStart + dataSize);
+  const len = rdU32(wavReadLsbs(samples, STEGO_PREFIX));
+  if (len === 0 || len > cap - STEGO_PREFIX) throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  const payload = wavReadLsbs(samples, STEGO_PREFIX + len).slice(STEGO_PREFIX);
+  if (payload[0] !== PLMP_MAGIC[0] || payload[1] !== PLMP_MAGIC[1] ||
+      payload[2] !== PLMP_MAGIC[2] || payload[3] !== PLMP_MAGIC[3])
+    throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
+  return payload;
+}
+
 // ─── Keyfile ──────────────────────────────────────────────────────────────────
 function generateKeyfileBytes()  { return crypto.getRandomValues(new Uint8Array(32)); }
 function downloadKeyfile(bytes) {
@@ -827,6 +930,10 @@ function userMessage(err) {
     if (err.code === StegoCodes.NO_PAYLOAD_FOUND) return 'No payload found in this image. Is this the right file?';
     return err.message;
   }
+  if (err instanceof WavStegoError) {
+    if (err.code === WavCodes.NO_PAYLOAD_FOUND) return 'No payload found in this WAV. Is this the right file?';
+    return err.message;
+  }
   console.error('Unexpected error:', err);
   return 'Unexpected error: ' + err.message;
 }
@@ -862,7 +969,9 @@ document.querySelectorAll('input[name="enc-input"]').forEach(r => r.addEventList
 }));
 document.querySelectorAll('input[name="enc-output"]').forEach(r => r.addEventListener('change', () => {
   $('enc-carrier-area').hidden = r.value !== 'png';
+  $('enc-wav-area').hidden     = r.value !== 'wav';
   if (r.value !== 'png') $('enc-capacity').hidden = true;
+  if (r.value !== 'wav') $('enc-wav-capacity').hidden = true;
 }));
 
 // ─── Carrier capacity ─────────────────────────────────────────────────────────
@@ -876,6 +985,21 @@ $('enc-carrier').addEventListener('change', async () => {
       ' B (' + bitmap.width + '\xd7' + bitmap.height + ')';
     cap.hidden = false;
   } catch { cap.textContent = 'Could not read image.'; cap.className = 'capacity-info error'; cap.hidden = false; }
+});
+
+$('enc-wav-carrier').addEventListener('change', async () => {
+  const cap = $('enc-wav-capacity'); cap.hidden = true; cap.className = 'capacity-info';
+  const file = $('enc-wav-carrier').files[0]; if (!file) return;
+  try {
+    const bytes = await readFileAsBytes(file);
+    const { dataSize } = parseWavHeader(new Uint8Array(bytes));
+    cap.textContent = 'Capacity: ' + wavCapacity(dataSize).toLocaleString() +
+      ' B (data chunk: ' + dataSize.toLocaleString() + ' B)';
+    cap.hidden = false;
+  } catch (e) {
+    cap.textContent = e instanceof WavStegoError ? e.message : 'Could not read WAV.';
+    cap.className = 'capacity-info error'; cap.hidden = false;
+  }
 });
 
 // ─── Keyfile (encrypt) ────────────────────────────────────────────────────────
@@ -979,6 +1103,7 @@ $('dec-use-prf').addEventListener('change', function () {
 // ─── Decrypt: source toggle ───────────────────────────────────────────────────
 document.querySelectorAll('input[name="dec-input"]').forEach(r => r.addEventListener('change', () => {
   $('dec-png-area').hidden     = r.value !== 'png';
+  $('dec-wav-area').hidden     = r.value !== 'wav';
   $('dec-armored-area').hidden = r.value !== 'armored';
 }));
 
@@ -1009,6 +1134,9 @@ $('enc-submit').addEventListener('click', async () => {
   if (outputType === 'png' && !$('enc-carrier').files[0]) {
     showStatus(statusEl, 'No carrier PNG selected.', 'error'); return;
   }
+  if (outputType === 'wav' && !$('enc-wav-carrier').files[0]) {
+    showStatus(statusEl, 'No carrier WAV selected.', 'error'); return;
+  }
 
   const useKeyfile = $('enc-use-keyfile').checked;
   if (useKeyfile && !encKeyfileBytes) {
@@ -1037,6 +1165,13 @@ $('enc-submit').addEventListener('click', async () => {
       const lbl = document.createElement('p'); lbl.className = 'result-label'; lbl.textContent = 'Copy this armored message:';
       const ta = document.createElement('textarea'); ta.className = 'result-text'; ta.readOnly = true; ta.rows = 10; ta.spellcheck = false; ta.value = armored;
       resultEl.appendChild(lbl); resultEl.appendChild(ta);
+    } else if (outputType === 'wav') {
+      showStatus(statusEl, 'Embedding payload…', 'working');
+      const stego = embedInWav(await readFileAsBytes($('enc-wav-carrier').files[0]), encrypted);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([stego], { type: 'audio/wav' }));
+      a.download = 'palimpsest-output.wav'; a.textContent = 'Download stego WAV'; a.className = 'download-link';
+      resultEl.appendChild(a);
     } else {
       showStatus(statusEl, 'Embedding payload…', 'working');
       const stego = await embedInPng(await readFileAsBytes($('enc-carrier').files[0]), encrypted);
@@ -1077,6 +1212,11 @@ $('dec-submit').addEventListener('click', async () => {
       if (!file) { showStatus(statusEl, 'No file selected.', 'error'); btn.disabled = false; return; }
       showStatus(statusEl, 'Extracting payload…', 'working');
       payloadBytes = await extractFromPng(await readFileAsBytes(file));
+    } else if (inputType === 'wav') {
+      const file = $('dec-wav-carrier').files[0];
+      if (!file) { showStatus(statusEl, 'No file selected.', 'error'); btn.disabled = false; return; }
+      showStatus(statusEl, 'Extracting payload…', 'working');
+      payloadBytes = extractFromWav(await readFileAsBytes(file));
     } else {
       const text = $('dec-armored').value.trim();
       if (!text) { showStatus(statusEl, 'Paste an armored message first.', 'error'); btn.disabled = false; return; }
@@ -1122,12 +1262,14 @@ $('dec-submit').addEventListener('click', async () => {
 });
 
 // ─── Wipe / ephemeral state ───────────────────────────────────────────────────
-let inactivityMs  = 5 * 60 * 1000;
-let wipeAt        = Date.now() + inactivityMs;
+let inactivityMs    = 5 * 60 * 1000;
+let lastActivityMs  = Date.now();
 let inactivityTimer;
 
 async function clearAllData() {
-  // Zero key material held in module-level variables before the page unloads.
+  // Zero typed-array key material. JS strings (e.g. the password) are immutable
+  // — the engine may have copied them and there is no way to overwrite every
+  // copy. Accessible state is cleared; process memory is not guaranteed.
   if (encKeyfileBytes) { encKeyfileBytes.fill(0); encKeyfileBytes = null; }
   if (decKeyfileBytes) { decKeyfileBytes.fill(0); decKeyfileBytes = null; }
   if (encPrfCredId)    { encPrfCredId.fill(0);    encPrfCredId    = null; }
@@ -1159,14 +1301,26 @@ async function clearAllData() {
   location.reload();
 }
 
+// Cheap handler — just records the timestamp. No setTimeout churn.
+function onActivity() { lastActivityMs = Date.now(); }
+
+function scheduleWipe() {
+  const idleFor = Date.now() - lastActivityMs;
+  if (idleFor >= inactivityMs) {
+    clearAllData();
+  } else {
+    inactivityTimer = setTimeout(scheduleWipe, inactivityMs - idleFor);
+  }
+}
+
 function resetInactivityTimer() {
   clearTimeout(inactivityTimer);
-  wipeAt        = Date.now() + inactivityMs;
-  inactivityTimer = setTimeout(() => clearAllData(), inactivityMs);
+  lastActivityMs  = Date.now();
+  inactivityTimer = setTimeout(scheduleWipe, inactivityMs);
 }
 
 function updateCountdown() {
-  const secs = Math.max(0, Math.ceil((wipeAt - Date.now()) / 1000));
+  const secs = Math.max(0, Math.ceil((lastActivityMs + inactivityMs - Date.now()) / 1000));
   const m = Math.floor(secs / 60), s = secs % 60;
   $('timer-display').textContent = 'Auto-wipe: ' + m + ':' + String(s).padStart(2, '0');
 }
@@ -1176,7 +1330,7 @@ updateCountdown();
 resetInactivityTimer();
 
 ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'].forEach(ev =>
-  document.addEventListener(ev, resetInactivityTimer, { passive: true })
+  document.addEventListener(ev, onActivity, { passive: true })
 );
 
 $('timer-input').addEventListener('change', function () {
@@ -1195,8 +1349,10 @@ $('wipe-toggle-btn').addEventListener('click', function () {
 $('wipe-btn').addEventListener('click', async () => {
   const ok = await showModal('Clear all data this tool created',
     '<p>Clears this origin\'s localStorage, sessionStorage, IndexedDB, and Cache Storage, then reloads the page.</p>' +
-    '<p><strong>Cannot touch:</strong> browser HTTP cache, browsing history, address bar autocomplete, ' +
-    'memory already released to the OS before this ran, swap files, or hibernation images.</p>');
+    '<p><strong>Cannot touch:</strong> passwords or text you typed (JS strings are immutable — ' +
+    'the engine may hold copies the wipe cannot reach), browser HTTP cache, browsing history, ' +
+    'address bar autocomplete, memory already released to the OS, swap files, or hibernation ' +
+    'images. Closing the browser tab is stronger.</p>');
   if (ok) await clearAllData();
 });
 </script>

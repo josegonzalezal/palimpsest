@@ -23,6 +23,13 @@ import {
   StegoCodes,
   StegoError,
 } from '../src/stego-png.mjs';
+import {
+  embedInWav,
+  extractFromWav,
+  WavCodes,
+  WavStegoError,
+  wavCapacity,
+} from '../src/stego-wav.mjs';
 import pngjsPkg from 'pngjs';
 
 const { PNG } = pngjsPkg;
@@ -470,6 +477,68 @@ await test('18. 25 MB payload ceiling (PAYLOAD_TOO_LARGE)', async () => {
   ).then(() => null, e => e);
   assert.ok(err instanceof PalimpsestError);
   assert.equal(err.code, ErrorCodes.PAYLOAD_TOO_LARGE);
+});
+
+// ─── Tests 19–21: WAV LSB steganography ──────────────────────────────────────
+
+// Minimal valid 16-bit mono PCM WAV with `numSamples` silent samples.
+function makePcmWav(numSamples) {
+  const dataSize = numSamples * 2;        // 16-bit = 2 bytes per sample
+  const buf      = new Uint8Array(44 + dataSize);
+  const dv       = new DataView(buf.buffer);
+  buf.set([0x52,0x49,0x46,0x46]);         // 'RIFF'
+  dv.setUint32(4,  36 + dataSize, true);  // file size - 8
+  buf.set([0x57,0x41,0x56,0x45], 8);      // 'WAVE'
+  buf.set([0x66,0x6d,0x74,0x20], 12);     // 'fmt '
+  dv.setUint32(16, 16, true);             // fmt chunk size
+  dv.setUint16(20,  1, true);             // PCM
+  dv.setUint16(22,  1, true);             // mono
+  dv.setUint32(24, 44100, true);          // sample rate
+  dv.setUint32(28, 88200, true);          // byte rate
+  dv.setUint16(32,  2, true);             // block align
+  dv.setUint16(34, 16, true);             // bits per sample
+  buf.set([0x64,0x61,0x74,0x61], 36);     // 'data'
+  dv.setUint32(40, dataSize, true);
+  return buf;
+}
+
+await test('19. WAV LSB round-trip (embed + extract)', async () => {
+  const payload = await encryptPayload({ type: 'text', data: 'wav test' }, 'pw', null, FAST);
+  // dataSize must give capacity >= PREFIX + payload.length (8 × each)
+  const wav     = makePcmWav(Math.ceil((4 + payload.length) * 8 / 2) + 50);
+
+  const stego = embedInWav(wav, payload);
+  const out   = extractFromWav(stego);
+  assert.deepEqual(Array.from(out), Array.from(payload));
+});
+
+await test('20. WAV capacity exceeded (CAPACITY_EXCEEDED)', async () => {
+  // Positive control: payload that exactly fits.
+  const wav = makePcmWav(100);
+  const cap = wavCapacity(100 * 2);      // 200 bytes data → 25 bytes capacity
+  const okPayload = new Uint8Array(cap - 4); // cap - PREFIX = 21 bytes
+  embedInWav(wav, okPayload);            // must not throw
+
+  // Negative: one byte over capacity.
+  const bigPayload = new Uint8Array(okPayload.length + 1);
+  let err = null;
+  try { embedInWav(wav, bigPayload); } catch (e) { err = e; }
+  assert.ok(err instanceof WavStegoError);
+  assert.equal(err.code, WavCodes.CAPACITY_EXCEEDED);
+});
+
+await test('21. WAV non-PCM format rejected (WAV_NOT_PCM)', async () => {
+  // Positive control: format=1 (PCM) is accepted.
+  const pcm = makePcmWav(1000);
+  embedInWav(pcm, new Uint8Array(4));    // must not throw
+
+  // Negative: format=6 (a-law) is rejected.
+  const alaw = makePcmWav(1000);
+  new DataView(alaw.buffer).setUint16(20, 6, true); // overwrite audioFormat field
+  let err = null;
+  try { embedInWav(alaw, new Uint8Array(4)); } catch (e) { err = e; }
+  assert.ok(err instanceof WavStegoError);
+  assert.equal(err.code, WavCodes.WAV_NOT_PCM);
 });
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
