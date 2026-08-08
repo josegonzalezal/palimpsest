@@ -784,24 +784,28 @@ async function extractFromPng(pngBytes) {
 }
 
 // ─── WAV LSB steganography ────────────────────────────────────────────────────
-// Capacity: floor(dataSizeBytes / 8). Carrier must be uncompressed PCM (fmt=1).
-// Stream: [u32be(len): 4 B][payload]. Same layout as PNG stego.
+// Capacity: floor(dataSizeBytes / (bytesPerSample × 8)). Carrier must be PCM.
+// One bit per sample, low byte only. Stream: [u32be(len): 4 B][payload].
 
-function wavCapacity(dataSize) { return Math.floor(dataSize / 8); }
+function wavCapacity(dataSize, bitsPerSample) {
+  const stride = Math.max(1, (bitsPerSample || 16) / 8);
+  return Math.floor(dataSize / (stride * 8));
+}
 
 function parseWavHeader(b) {
   if (b.length < 12 ||
       String.fromCharCode(b[0],b[1],b[2],b[3]) !== 'RIFF' ||
       String.fromCharCode(b[8],b[9],b[10],b[11]) !== 'WAVE')
     throw new WavStegoError(WavCodes.WAV_MALFORMED, 'Not a WAV file');
-  let pos = 12, audioFmt = -1, dataStart = -1, dataSize = 0;
+  let pos = 12, audioFmt = -1, bitsPerSample = 16, dataStart = -1, dataSize = 0;
   while (pos + 8 <= b.length) {
     const id   = String.fromCharCode(b[pos],b[pos+1],b[pos+2],b[pos+3]);
     const size = readU32le(b, pos + 4);
     const body = pos + 8;
     if (id === 'fmt ') {
       if (size < 16) throw new WavStegoError(WavCodes.WAV_MALFORMED, 'fmt chunk too small');
-      audioFmt = readU16le(b, body);
+      audioFmt      = readU16le(b, body);
+      bitsPerSample = readU16le(b, body + 14);
     } else if (id === 'data') {
       dataStart = body; dataSize = size; break;
     }
@@ -811,23 +815,23 @@ function parseWavHeader(b) {
   if (dataStart < 0) throw new WavStegoError(WavCodes.WAV_MALFORMED, 'No data chunk found');
   if (audioFmt !== 1) throw new WavStegoError(WavCodes.WAV_NOT_PCM,
     'WAV format ' + audioFmt + ' is not uncompressed PCM (expected 1). Re-export as 16-bit PCM WAV.');
-  return { dataStart, dataSize };
+  return { dataStart, dataSize, bitsPerSample };
 }
 
-function wavWriteLsbs(samples, stream) {
+function wavWriteLsbs(samples, stream, stride) {
   for (let i = 0; i < stream.length; i++) {
     const byte = stream[i];
     for (let bit = 0; bit < 8; bit++) {
-      const si = i * 8 + bit;
-      samples[si] = (samples[si] & 0xfe) | ((byte >>> (7 - bit)) & 1);
+      const idx = (i * 8 + bit) * stride;
+      samples[idx] = (samples[idx] & 0xfe) | ((byte >>> (7 - bit)) & 1);
     }
   }
 }
-function wavReadLsbs(samples, numBytes) {
+function wavReadLsbs(samples, numBytes, stride) {
   const out = new Uint8Array(numBytes);
   for (let i = 0; i < numBytes; i++) {
     let byte = 0;
-    for (let bit = 0; bit < 8; bit++) byte |= (samples[i * 8 + bit] & 1) << (7 - bit);
+    for (let bit = 0; bit < 8; bit++) byte |= (samples[(i * 8 + bit) * stride] & 1) << (7 - bit);
     out[i] = byte;
   }
   return out;
@@ -835,25 +839,27 @@ function wavReadLsbs(samples, numBytes) {
 
 function embedInWav(wavBytes, payloadBytes) {
   const b = new Uint8Array(wavBytes);
-  const { dataStart, dataSize } = parseWavHeader(b);
-  const cap = wavCapacity(dataSize), req = STEGO_PREFIX + payloadBytes.length;
+  const { dataStart, dataSize, bitsPerSample } = parseWavHeader(b);
+  const stride = Math.max(1, bitsPerSample / 8);
+  const cap = wavCapacity(dataSize, bitsPerSample), req = STEGO_PREFIX + payloadBytes.length;
   if (req > cap) throw new WavStegoError(WavCodes.CAPACITY_EXCEEDED,
-    'Carrier too small: need ' + req + ' B but capacity is ' + cap + ' B (data chunk is ' + dataSize + ' B).');
+    'Carrier too small: need ' + req + ' B but capacity is ' + cap + ' B (' + bitsPerSample + '-bit PCM, data chunk: ' + dataSize + ' B).');
   const out = new Uint8Array(b), samples = out.subarray(dataStart, dataStart + dataSize);
   const stream = new Uint8Array(req);
   stream.set(mkU32(payloadBytes.length)); stream.set(payloadBytes, STEGO_PREFIX);
-  wavWriteLsbs(samples, stream);
+  wavWriteLsbs(samples, stream, stride);
   return out;
 }
 function extractFromWav(wavBytes) {
   const b = new Uint8Array(wavBytes);
-  const { dataStart, dataSize } = parseWavHeader(b);
-  const cap = wavCapacity(dataSize);
+  const { dataStart, dataSize, bitsPerSample } = parseWavHeader(b);
+  const stride = Math.max(1, bitsPerSample / 8);
+  const cap = wavCapacity(dataSize, bitsPerSample);
   if (cap < STEGO_PREFIX) throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
   const samples = b.subarray(dataStart, dataStart + dataSize);
-  const len = rdU32(wavReadLsbs(samples, STEGO_PREFIX));
+  const len = rdU32(wavReadLsbs(samples, STEGO_PREFIX, stride));
   if (len === 0 || len > cap - STEGO_PREFIX) throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
-  const payload = wavReadLsbs(samples, STEGO_PREFIX + len).slice(STEGO_PREFIX);
+  const payload = wavReadLsbs(samples, STEGO_PREFIX + len, stride).slice(STEGO_PREFIX);
   if (payload[0] !== PLMP_MAGIC[0] || payload[1] !== PLMP_MAGIC[1] ||
       payload[2] !== PLMP_MAGIC[2] || payload[3] !== PLMP_MAGIC[3])
     throw new WavStegoError(WavCodes.NO_PAYLOAD_FOUND, 'No payload found in this carrier');
@@ -1054,9 +1060,9 @@ $('enc-wav-carrier').addEventListener('change', async () => {
   const file = $('enc-wav-carrier').files[0]; if (!file) return;
   try {
     const bytes = await readFileAsBytes(file);
-    const { dataSize } = parseWavHeader(new Uint8Array(bytes));
-    cap.textContent = 'Capacity: ' + wavCapacity(dataSize).toLocaleString() +
-      ' B (data chunk: ' + dataSize.toLocaleString() + ' B)';
+    const { dataSize, bitsPerSample } = parseWavHeader(new Uint8Array(bytes));
+    cap.textContent = 'Capacity: ' + wavCapacity(dataSize, bitsPerSample).toLocaleString() +
+      ' B (' + bitsPerSample + '-bit PCM, data chunk: ' + dataSize.toLocaleString() + ' B)';
     cap.hidden = false;
   } catch (e) {
     cap.textContent = e instanceof WavStegoError ? e.message : 'Could not read WAV.';

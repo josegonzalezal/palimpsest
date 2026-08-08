@@ -510,20 +510,31 @@ function makePcmWav(numSamples) {
 
 await test('19. WAV LSB round-trip (embed + extract)', async () => {
   const payload = await encryptPayload({ type: 'text', data: 'wav test' }, 'pw', null, FAST);
-  // dataSize must give capacity >= PREFIX + payload.length (8 × each)
-  const wav     = makePcmWav(Math.ceil((4 + payload.length) * 8 / 2) + 50);
+  // 16-bit PCM: 1 bit per sample → need (PREFIX + payload.length) * 8 samples.
+  const numSamples = (4 + payload.length) * 8 + 50;
+  const wav        = makePcmWav(numSamples);
 
   const stego = embedInWav(wav, payload);
   const out   = extractFromWav(stego);
   assert.deepEqual(Array.from(out), Array.from(payload));
+
+  // For 16-bit PCM only the low byte (even index) of each sample is touched.
+  // All high bytes (odd indices in the data chunk) must remain zero.
+  const dataStart = 44; // fixed for makePcmWav (44-byte header)
+  let highBytesClean = true;
+  for (let i = dataStart + 1; i < stego.length; i += 2) {
+    if (stego[i] !== 0) { highBytesClean = false; break; }
+  }
+  assert.ok(highBytesClean, 'high bytes of 16-bit samples must not be modified');
 });
 
 await test('20. WAV capacity exceeded (CAPACITY_EXCEEDED)', async () => {
   // Positive control: payload that exactly fits.
+  // 100 samples × 2 B/sample = 200 B data; 16-bit stride=2 → capacity = 200/16 = 12 B.
   const wav = makePcmWav(100);
-  const cap = wavCapacity(100 * 2);      // 200 bytes data → 25 bytes capacity
-  const okPayload = new Uint8Array(cap - 4); // cap - PREFIX = 21 bytes
-  embedInWav(wav, okPayload);            // must not throw
+  const cap = wavCapacity(100 * 2, 16); // 12 bytes
+  const okPayload = new Uint8Array(cap - 4); // cap - PREFIX = 8 bytes
+  embedInWav(wav, okPayload);           // must not throw
 
   // Negative: one byte over capacity.
   const bigPayload = new Uint8Array(okPayload.length + 1);

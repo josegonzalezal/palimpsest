@@ -150,13 +150,13 @@ but the test fixture does not exercise this path.
 present in the original WAV. If the parser assumed `data` is always the second
 chunk, it would throw `WAV_MALFORMED` at step 4 instead.
 
-**Note on bit depth and noise:** the implementation treats the data chunk as a
-flat byte array (1 bit per byte). For 16-bit PCM this modifies both the low byte
-(~-96 dBFS, inaudible) and the high byte (~-48 dBFS, equivalent to 8-bit
-recording noise floor) of each sample. Check whether the output WAV sounds
-identical to the original at a comfortable listening volume. Detectable
-differences in quiet passages are expected behaviour, not a bug, but are worth
-noting in the context of the "Tier 1 — hidden" label.
+**Note on bit depth and noise:** the implementation embeds 1 bit per *sample*,
+always in the sample's least-significant byte (stride = bytesPerSample). For
+16-bit PCM only bytes at even positions in the data chunk are touched; the high
+byte is never modified. Noise stays at the ~-96 dBFS floor and is inaudible even
+in very quiet passages. The output WAV should sound identical to the original.
+If any audible difference is detected, report it — that would indicate a bug in
+the stride logic.
 
 ---
 
