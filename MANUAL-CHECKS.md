@@ -122,6 +122,76 @@ inside the authenticator.
 
 ---
 
+## 5. WAV carrier round-trip with a real-world file (Milestone 5c)
+
+**Why it exists:** the automated test suite uses a synthetic minimal WAV built by
+hand. Real-world WAV files exported from DAWs and audio editors often contain
+extra chunks before the data chunk — `fact`, `LIST`, `JUNK`, `bext`, `cue `,
+`smpl`, etc. — in non-standard orderings. The parser is supposed to skip these,
+but the test fixture does not exercise this path.
+
+**Steps:**
+
+1. Export or obtain a real-world PCM WAV file from an audio editor (Audacity,
+   GarageBand, Logic, Reaper). Prefer one that is likely to have extra chunks:
+   - Audacity: File → Export → WAV (Microsoft); opens with a `LIST` chunk
+   - Any DAW that embeds metadata: will add `bext`, `JUNK`, or `smpl`
+2. Inspect the file in a hex editor or with `ffprobe`/`mediainfo` to confirm
+   it has chunks other than `fmt ` and `data` (or note that it does not — that
+   is also valid input, just less thorough).
+3. Open the tool. Encrypt a short text message. Select *Output → Embed in WAV
+   carrier*. Load the real-world WAV. Note the capacity shown.
+4. Click *Encrypt*. Download the stego WAV.
+5. Reload the page.
+6. Select *Decrypt → WAV carrier*. Load the stego WAV. Enter the same password.
+7. Click *Decrypt*. Confirm the message matches exactly.
+
+**Pass criteria:** decryption succeeds regardless of which extra chunks were
+present in the original WAV. If the parser assumed `data` is always the second
+chunk, it would throw `WAV_MALFORMED` at step 4 instead.
+
+**Note on bit depth and noise:** the implementation treats the data chunk as a
+flat byte array (1 bit per byte). For 16-bit PCM this modifies both the low byte
+(~-96 dBFS, inaudible) and the high byte (~-48 dBFS, equivalent to 8-bit
+recording noise floor) of each sample. Check whether the output WAV sounds
+identical to the original at a comfortable listening volume. Detectable
+differences in quiet passages are expected behaviour, not a bug, but are worth
+noting in the context of the "Tier 1 — hidden" label.
+
+---
+
+## 6. Fallback carrier round-trip (Milestone 5d)
+
+**Why it exists:** the fallback appender is a different code path with no
+steganography. The host file must survive intact at its start, the payload must
+be recoverable, and the tool must make unmistakably clear to the user that this
+mode is not hidden.
+
+**Steps:**
+
+1. Open the tool. Encrypt a short text message. Select *Output → Append to any
+   file (Tier 3 — attached, findable)*. Load any file — a PDF, a JPEG, a text
+   file, anything.
+2. Click *Encrypt*. Download the output file.
+3. Open the output file in its native application (e.g. the PDF reader). Confirm
+   it opens and displays normally — the appended data must not break the host
+   format's parser.
+4. Inspect the output file in a hex editor. Confirm the last 8 bytes are
+   `50 4C 4D 50 46 41 4C 4C` (PLMPFALL) and the payload is visible in plain
+   bytes before them. This is the expected "findable" behaviour.
+5. Reload the page. Select *Decrypt → Fallback carrier*. Load the output file.
+   Enter the same password. Click *Decrypt*.
+6. **Expected:** the original message is recovered.
+
+**Negative check:**
+
+7. Select *Decrypt → Fallback carrier*. Load a plain file with no payload (the
+   original host file before encryption). Click *Decrypt*.
+8. **Expected:** error "No payload found in this file" — no crash, no garbage
+   output.
+
+---
+
 ## 4. Wipe / clear-data button (Milestone 5b)
 
 **Why it exists:** the wipe is a best-effort cleanup of browser-held state. It
@@ -143,9 +213,12 @@ expected storages are actually empty afterward.
 4. **Expected:** the page reloads. All storage entries for this origin are gone.
    The decrypted plaintext is no longer visible. The keyfile state is gone.
 5. Open DevTools → Memory tab → *Take heap snapshot*. Search for the password
-   or plaintext string you used. It should not appear in live string objects
-   (note: it may still appear in the snapshot infrastructure itself; that is
-   acceptable).
+   string you used. It **will** appear — JS strings are immutable and the engine
+   may hold multiple copies across GC generations; the wipe cannot reach them.
+   This is expected and is stated plainly in the UI. What the wipe does zero are
+   the typed-array buffers holding keyfile bytes and the WebAuthn credential ID.
+   Closing the browser tab (or the whole browser) is the stronger guarantee for
+   string secrets.
 
 **Inactivity timer:**
 

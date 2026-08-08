@@ -18,8 +18,9 @@ server is required.
 | 5a — Arbitrary file encryption (documents, images, audio, video, archives) | Done |
 | 5b — Ephemeral state (inactivity timer + wipe button) | Done |
 | 5c — WAV carrier (LSB over PCM samples, Tier 1 — hidden) | Done |
+| 5d — Universal fallback carrier (append to any file, Tier 3 — attached, findable) | Done |
 
-Test suite: 21 of 21 green.
+Test suite: 23 of 23 green.
 
 ## Security notice
 

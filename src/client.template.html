@@ -111,6 +111,7 @@ legend { font-size: 0.875rem; font-weight: 500; color: #333; padding: 0 0.25rem;
 .capacity-info { font-size: 0.8125rem; color: #555; margin-top: 0.375rem; }
 .capacity-info.error { color: #a00; }
 .tier-badge { font-size: 0.75rem; color: #666; background: #eee; padding: 0.1em 0.4em; border-radius: 3px; white-space: nowrap; }
+.tier-badge-warn { color: #7a4500; background: #ffecd1; }
 
 .btn-primary {
   display: inline-block; padding: 0.5rem 1.25rem;
@@ -217,6 +218,7 @@ a.download-link {
   .capacity-info { color: #aaa; }
   .capacity-info.error { color: #f88; }
   .tier-badge { color: #999; background: #2a2a2a; }
+  .tier-badge-warn { color: #ffbf80; background: #3d2200; }
   .btn-primary { background: #ddd; color: #141414; }
   .btn-primary:hover:not(:disabled) { background: #bbb; }
   .status.ok      { color: #7fc97f; background: #081808; }
@@ -335,6 +337,7 @@ a.download-link {
         <label><input type="radio" name="enc-output" value="png" checked> Embed in PNG carrier <span class="tier-badge">Tier 1 — hidden</span></label>
         <label><input type="radio" name="enc-output" value="wav"> Embed in WAV carrier <span class="tier-badge">Tier 1 — hidden</span></label>
         <label><input type="radio" name="enc-output" value="armored"> Armored text</label>
+        <label><input type="radio" name="enc-output" value="fallback"> Append to any file <span class="tier-badge tier-badge-warn">Tier 3 — attached, findable</span></label>
       </div>
       <div id="enc-carrier-area" class="sub-content">
         <label for="enc-carrier">Carrier PNG</label>
@@ -345,6 +348,16 @@ a.download-link {
         <label for="enc-wav-carrier">Carrier WAV (uncompressed PCM)</label>
         <input type="file" id="enc-wav-carrier" accept="audio/wav,audio/wave,.wav">
         <div id="enc-wav-capacity" class="capacity-info" hidden></div>
+      </div>
+      <div id="enc-fallback-area" class="sub-content" hidden>
+        <label for="enc-fallback-carrier">Host file (any type)</label>
+        <input type="file" id="enc-fallback-carrier">
+        <p class="wipe-limits-note" style="margin-top:0.5rem">
+          The payload is appended as-is after the file's last byte. The host file
+          opens normally in its native application. Any hex editor, <code>strings</code>,
+          or <code>binwalk</code> will find the payload immediately — this is not
+          steganography.
+        </p>
       </div>
     </fieldset>
 
@@ -395,6 +408,7 @@ a.download-link {
         <label><input type="radio" name="dec-input" value="png" checked> PNG carrier</label>
         <label><input type="radio" name="dec-input" value="wav"> WAV carrier</label>
         <label><input type="radio" name="dec-input" value="armored"> Armored text</label>
+        <label><input type="radio" name="dec-input" value="fallback"> Fallback carrier (any file)</label>
       </div>
       <div id="dec-png-area" class="sub-content">
         <label for="dec-carrier">Carrier PNG</label>
@@ -403,6 +417,10 @@ a.download-link {
       <div id="dec-wav-area" class="sub-content" hidden>
         <label for="dec-wav-carrier">Carrier WAV</label>
         <input type="file" id="dec-wav-carrier" accept="audio/wav,audio/wave,.wav">
+      </div>
+      <div id="dec-fallback-area" class="sub-content" hidden>
+        <label for="dec-fallback-carrier">File with appended payload</label>
+        <input type="file" id="dec-fallback-carrier">
       </div>
       <div id="dec-armored-area" class="sub-content" hidden>
         <label for="dec-armored">Armored message</label>
@@ -497,6 +515,10 @@ const WavCodes = {
 };
 class WavStegoError extends Error {
   constructor(code, message) { super(message); this.name = 'WavStegoError'; this.code = code; }
+}
+const FallbackCodes = { NO_PAYLOAD_FOUND: 'NO_PAYLOAD_FOUND' };
+class FallbackError extends Error {
+  constructor(code, message) { super(message); this.name = 'FallbackError'; this.code = code; }
 }
 
 // ─── Buffer helpers ───────────────────────────────────────────────────────────
@@ -831,6 +853,42 @@ function extractFromWav(wavBytes) {
   return payload;
 }
 
+// ─── Fallback carrier (Tier 3) ───────────────────────────────────────────────
+// Appends payload + u32be(len) + MAGIC after the last byte of any host file.
+// Trivially findable — not steganography. Label in UI must say so.
+
+const FALLBACK_MAGIC = new Uint8Array([0x50,0x4c,0x4d,0x50,0x46,0x41,0x4c,0x4c]); // 'PLMPFALL'
+const FALLBACK_TRAILER = FALLBACK_MAGIC.length + 4; // 12
+
+function embedInFallback(fileBytes, payloadBytes) {
+  const out = new Uint8Array(fileBytes.length + payloadBytes.length + 4 + FALLBACK_MAGIC.length);
+  let off = 0;
+  out.set(fileBytes, off);                    off += fileBytes.length;
+  out.set(payloadBytes, off);                 off += payloadBytes.length;
+  out.set(mkU32(payloadBytes.length), off);   off += 4;
+  out.set(FALLBACK_MAGIC, off);
+  return out;
+}
+function extractFromFallback(fileBytes) {
+  const b = new Uint8Array(fileBytes);
+  if (b.length < FALLBACK_TRAILER)
+    throw new FallbackError(FallbackCodes.NO_PAYLOAD_FOUND, 'No payload found in this file');
+  const magicOff = b.length - FALLBACK_MAGIC.length;
+  for (let i = 0; i < FALLBACK_MAGIC.length; i++) {
+    if (b[magicOff + i] !== FALLBACK_MAGIC[i])
+      throw new FallbackError(FallbackCodes.NO_PAYLOAD_FOUND, 'No payload found in this file');
+  }
+  const lenOff = magicOff - 4;
+  const payLen = rdU32(b.slice(lenOff, lenOff + 4));
+  if (payLen === 0 || payLen > lenOff)
+    throw new FallbackError(FallbackCodes.NO_PAYLOAD_FOUND, 'No payload found in this file');
+  const payload = b.slice(lenOff - payLen, lenOff);
+  if (payload[0] !== PLMP_MAGIC[0] || payload[1] !== PLMP_MAGIC[1] ||
+      payload[2] !== PLMP_MAGIC[2] || payload[3] !== PLMP_MAGIC[3])
+    throw new FallbackError(FallbackCodes.NO_PAYLOAD_FOUND, 'No payload found in this file');
+  return payload;
+}
+
 // ─── Keyfile ──────────────────────────────────────────────────────────────────
 function generateKeyfileBytes()  { return crypto.getRandomValues(new Uint8Array(32)); }
 function downloadKeyfile(bytes) {
@@ -927,6 +985,9 @@ function userMessage(err) {
     if (err.code === WavCodes.NO_PAYLOAD_FOUND) return 'No payload found in this WAV. Is this the right file?';
     return err.message;
   }
+  if (err instanceof FallbackError) {
+    return 'No payload found in this file. Is this the right file?';
+  }
   console.error('Unexpected error:', err);
   return 'Unexpected error: ' + err.message;
 }
@@ -961,8 +1022,9 @@ document.querySelectorAll('input[name="enc-input"]').forEach(r => r.addEventList
   $('enc-file-area').hidden = r.value !== 'file';
 }));
 document.querySelectorAll('input[name="enc-output"]').forEach(r => r.addEventListener('change', () => {
-  $('enc-carrier-area').hidden = r.value !== 'png';
-  $('enc-wav-area').hidden     = r.value !== 'wav';
+  $('enc-carrier-area').hidden  = r.value !== 'png';
+  $('enc-wav-area').hidden      = r.value !== 'wav';
+  $('enc-fallback-area').hidden = r.value !== 'fallback';
   if (r.value !== 'png') $('enc-capacity').hidden = true;
   if (r.value !== 'wav') $('enc-wav-capacity').hidden = true;
 }));
@@ -1095,9 +1157,10 @@ $('dec-use-prf').addEventListener('change', function () {
 
 // ─── Decrypt: source toggle ───────────────────────────────────────────────────
 document.querySelectorAll('input[name="dec-input"]').forEach(r => r.addEventListener('change', () => {
-  $('dec-png-area').hidden     = r.value !== 'png';
-  $('dec-wav-area').hidden     = r.value !== 'wav';
-  $('dec-armored-area').hidden = r.value !== 'armored';
+  $('dec-png-area').hidden      = r.value !== 'png';
+  $('dec-wav-area').hidden      = r.value !== 'wav';
+  $('dec-fallback-area').hidden = r.value !== 'fallback';
+  $('dec-armored-area').hidden  = r.value !== 'armored';
 }));
 
 // ─── Encrypt handler ──────────────────────────────────────────────────────────
@@ -1129,6 +1192,9 @@ $('enc-submit').addEventListener('click', async () => {
   }
   if (outputType === 'wav' && !$('enc-wav-carrier').files[0]) {
     showStatus(statusEl, 'No carrier WAV selected.', 'error'); return;
+  }
+  if (outputType === 'fallback' && !$('enc-fallback-carrier').files[0]) {
+    showStatus(statusEl, 'No host file selected.', 'error'); return;
   }
 
   const useKeyfile = $('enc-use-keyfile').checked;
@@ -1165,6 +1231,18 @@ $('enc-submit').addEventListener('click', async () => {
       a.href = URL.createObjectURL(new Blob([stego], { type: 'audio/wav' }));
       a.download = 'palimpsest-output.wav'; a.textContent = 'Download stego WAV'; a.className = 'download-link';
       resultEl.appendChild(a);
+    } else if (outputType === 'fallback') {
+      showStatus(statusEl, 'Appending payload…', 'working');
+      const hostFile = $('enc-fallback-carrier').files[0];
+      const stego = embedInFallback(await readFileAsBytes(hostFile), encrypted);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([stego], { type: hostFile.type || 'application/octet-stream' }));
+      a.download = hostFile.name; a.textContent = 'Download ' + hostFile.name; a.className = 'download-link';
+      resultEl.appendChild(a);
+      const note = document.createElement('p');
+      note.className = 'wipe-limits-note';
+      note.textContent = 'Tier 3 — the payload is appended in plain bytes. A hex editor or binwalk will find it immediately.';
+      resultEl.appendChild(note);
     } else {
       showStatus(statusEl, 'Embedding payload…', 'working');
       const stego = await embedInPng(await readFileAsBytes($('enc-carrier').files[0]), encrypted);
@@ -1210,6 +1288,11 @@ $('dec-submit').addEventListener('click', async () => {
       if (!file) { showStatus(statusEl, 'No file selected.', 'error'); btn.disabled = false; return; }
       showStatus(statusEl, 'Extracting payload…', 'working');
       payloadBytes = extractFromWav(await readFileAsBytes(file));
+    } else if (inputType === 'fallback') {
+      const file = $('dec-fallback-carrier').files[0];
+      if (!file) { showStatus(statusEl, 'No file selected.', 'error'); btn.disabled = false; return; }
+      showStatus(statusEl, 'Extracting payload…', 'working');
+      payloadBytes = extractFromFallback(await readFileAsBytes(file));
     } else {
       const text = $('dec-armored').value.trim();
       if (!text) { showStatus(statusEl, 'Paste an armored message first.', 'error'); btn.disabled = false; return; }

@@ -5,9 +5,12 @@
 // carry acoustic structure at every bit position; LSB modification is audible.
 //
 // Capacity: floor(dataSizeBytes / 8) bytes.
-//   One bit per byte in the PCM data chunk (LSB of each byte). For 16-bit
-//   audio the embedded noise is ~0.003 dB — below the noise floor of any
-//   real recording.
+//   Treats the data chunk as a flat byte array: 1 bit per byte (the LSB),
+//   with no awareness of sample bit depth. For 16-bit PCM this means both
+//   the low byte (~-96 dBFS noise, inaudible) and the high byte (~-48 dBFS,
+//   equivalent to 8-bit recording noise floor) of each sample are modified.
+//   The -48 dBFS level is inaudible in typical content but may be detectable
+//   in very quiet passages with high-quality equipment.
 //
 // LSB stream layout: [u32be(payloadLen): 4 B] [payload: payloadLen B]
 //   Identical to stego-png. extractFromWav verifies the PLMP magic before

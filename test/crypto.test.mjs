@@ -30,6 +30,12 @@ import {
   WavStegoError,
   wavCapacity,
 } from '../src/stego-wav.mjs';
+import {
+  embedInFallback,
+  extractFromFallback,
+  FallbackCodes,
+  FallbackError,
+} from '../src/stego-fallback.mjs';
 import pngjsPkg from 'pngjs';
 
 const { PNG } = pngjsPkg;
@@ -539,6 +545,33 @@ await test('21. WAV non-PCM format rejected (WAV_NOT_PCM)', async () => {
   try { embedInWav(alaw, new Uint8Array(4)); } catch (e) { err = e; }
   assert.ok(err instanceof WavStegoError);
   assert.equal(err.code, WavCodes.WAV_NOT_PCM);
+});
+
+// ─── Tests 22–23: fallback carrier ───────────────────────────────────────────
+
+await test('22. Fallback carrier round-trip (any file type)', async () => {
+  const payload = await encryptPayload({ type: 'text', data: 'fallback test' }, 'pw', null, FAST);
+  const carrier = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // '%PDF-' header
+
+  const stego = embedInFallback(carrier, payload);
+  const out   = extractFromFallback(stego);
+  assert.deepEqual(Array.from(out), Array.from(payload));
+
+  // Host file bytes must be byte-for-byte intact at the start.
+  assert.deepEqual(Array.from(stego.slice(0, carrier.length)), Array.from(carrier));
+});
+
+await test('23. Fallback: no payload → NO_PAYLOAD_FOUND', async () => {
+  // Positive control: a carrier with payload must succeed.
+  const payload = await encryptPayload({ type: 'text', data: 'ok' }, 'pw', null, FAST);
+  extractFromFallback(embedInFallback(new Uint8Array([1, 2, 3]), payload)); // must not throw
+
+  // Negative: plain file without payload.
+  const plain = new Uint8Array([0x50, 0x4c, 0x4d, 0x50]); // PLMP header but no wrapper
+  let err = null;
+  try { extractFromFallback(plain); } catch (e) { err = e; }
+  assert.ok(err instanceof FallbackError);
+  assert.equal(err.code, FallbackCodes.NO_PAYLOAD_FOUND);
 });
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
