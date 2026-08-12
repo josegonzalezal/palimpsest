@@ -1,3 +1,8 @@
+> **Note:** The pepper backend (Milestone 4 in this brief) was replaced by a
+> local second factor — keyfile or WebAuthn PRF. See DECISIONS.md for the
+> rationale. The rest of this brief reflects the original design intent and
+> is kept for reference.
+
 # Build brief — Palimpsest
 
 ## What we're building
