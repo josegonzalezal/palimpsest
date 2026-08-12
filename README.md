@@ -126,7 +126,7 @@ or the tool rejects it.
 
 ```bash
 npm install
-npm test          # headless crypto suite (16 tests, Node.js)
+npm test          # headless crypto suite (23 tests, Node.js)
 npm run build     # compile index.html from src/client.template.html
 ```
 
