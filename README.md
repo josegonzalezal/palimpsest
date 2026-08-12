@@ -28,6 +28,33 @@ This is a personal project written to learn applied cryptography. It has not
 been audited by anyone. Use `age`, `VeraCrypt`, or `Signal` for anything that
 actually matters.
 
+## Use cases
+
+**Works for:**
+- Encrypting personal notes, credentials or sensitive text before storing
+  them in the cloud or sending over an untrusted channel
+- Hiding that a message exists (not just its content) by embedding it in
+  an image or audio file — useful when steganography matters, not just
+  encryption
+- A personal offline vault with two independent factors (keyfile + hardware
+  key) and no service dependency
+
+**Does not work for:**
+- Secure communication between two people who have never exchanged a keyfile
+  in person. The keyfile must be shared over a secure channel first — which
+  is exactly the problem you are trying to solve. Use Signal + PGP for that.
+- Protecting anything truly high-stakes. This project has not been audited.
+  Use age, VeraCrypt or Signal for anything that actually matters.
+- Large files. The 25 MB ceiling and PNG carrier capacity make it impractical
+  for video or large documents.
+
+**Could work as an extra layer alongside Signal:**
+- If two people exchange a keyfile in person, they can embed Palimpsest
+  payloads inside innocent-looking images and send them over Signal. Signal
+  already encrypts the transport; Palimpsest adds steganography — hiding that
+  a message exists at all, not just its content. This is called covert
+  communication and is a legitimate use case.
+
 ## Threat model
 
 Recovering a payload requires:
